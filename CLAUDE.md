@@ -50,7 +50,7 @@ Três invariantes explicam quase todas as decisões do código:
 | [lib/dmi.js](lib/dmi.js) | parse/build da metadata + fatiar/montar a spritesheet |
 | [lib/gif.js](lib/gif.js) | encoder GIF89a (paleta por frequência, LZW, transparência, loop) |
 | [server.js](server.js) | HTTP local: lista pastas, abre/grava, import/export, stat, renomear/duplicar/excluir |
-| [public/pixels.js](public/pixels.js) | operações de pixel **puras** (sem DOM, sem estado global): desenho, região, HSL, transformações, redução dominante, paleta |
+| [public/pixels.js](public/pixels.js) | operações de pixel **puras** (sem DOM, sem estado global): desenho, região, HSL, transformações, redução dominante, paleta, autotile, fills de textura |
 | [public/app.js](public/app.js) | toda a UI, num arquivo só, sem framework |
 | [public/smoke.html](public/smoke.html) | smoke test |
 
@@ -64,6 +64,37 @@ sem inventar cor que não existia. Decisões globais (paleta, cor do fundo) são
 **uma vez sobre todos os frames**, nunca por frame — senão a animação cintila. A detecção
 de malha Canny/Hough do original não foi portada de propósito: o icon size do DMI é
 conhecido, a malha é uniforme.
+
+O **fundo é removido na FONTE, antes do downsample** (`convertedFrames` em app.js — e por
+isso fundo/tolerância fazem parte da chave do `impCache`). Não é otimização, é o único
+lugar onde funciona: em alta resolução o halo de anti-aliasing é uma rampa de 1–2px que a
+regra de maioria do downsample descarta, e a célula na borda do sprite pega a cor do
+*sprite*. Limpar só o resultado não tem conserto — lá o halo já virou a cor dominante de
+células inteiras, e um cinza a meio caminho do contorno preto está mais *longe* do fundo
+branco que o próprio sprite: nenhuma tolerância separa os dois. Mover a limpeza de volta
+pra depois da redução reintroduz borda suja e buraco na silhueta (há check disso no smoke).
+
+A limpeza é **por célula** (o flood é semeado na borda da célula, não da folha) — é isso
+que permite a **tolerância por frame** (`impTolOv`, índice→tol; o slider mora no painel de
+zoom e segue o alvo). A *cor* do fundo continua global (senão animação cintila); a
+tolerância pode variar porque é decisão espacial, não de cor — mas numa fonte *animada* o
+diálogo avisa que override por quadro pode cintilar. Os overrides são indexados por célula:
+quando a geometria muda a contagem, caducam junto com a `impSkip` — e a invalidação roda
+**antes** de converter (depois, a conversão daquela rodada já teria aplicado os índices
+errados).
+
+### Autotile e texturas ([public/pixels.js](public/pixels.js))
+
+`autotileVariant` (adaptado do texel-studio) gera as 16 variantes de junção de um tile:
+sombra nas bordas expostas, contorno escurecido, canto arredondado. O diálogo Autotile cria
+16 states nomeados pelo **número da junção na convenção de dirs da BYOND** (N=1, S=2, E=4,
+W=8; bit ligado = vizinho presente, junção 15 = tile intacto) — não invente outra ordem de
+bits, é a que os sistemas de smoothing por bitmask esperam. `noiseFill`/`voronoiFill` são
+**determinísticos por semente** (hash inteiro, nada de `Math.random` em pixels.js): preview
+ao vivo, resultado final e um redo futuro com a mesma semente produzem bytes idênticos.
+
+A **escala do export** (1–8×) amplia por `scaleNearest` no cliente, antes do envelope — o
+servidor não sabe que existe escala, e o caminho continua sem canvas.
 
 ### Import de imagem ([public/app.js](public/app.js), bloco "import de imagem")
 

@@ -43,6 +43,7 @@ let importResult = null;  // { all, kept, frames, bgColor, cleared, mode, colors
 let impSkip = new Set();  // índices (na lista convertida) das células/quadros que NÃO entram
 let impSkipTotal = -1;    // total pro qual o impSkip foi montado: se mudar, a seleção não vale mais
 let impBgManual = false;  // false = cor do fundo detectada na borda; true = a do #impBgColor
+let impTolOv = new Map(); // tolerância por frame (índice → tol); quem não está aqui herda a global
 let impOpening = false;   // um import está sendo montado (decodificando): o diálogo vai abrir
 
 const TAB_FIELDS = [
@@ -1727,6 +1728,205 @@ $('dlgReplace').addEventListener('close', () => {
   toast(n ? `${n} pixels trocados` : 'Nenhum pixel com essa cor exata', !n);
 });
 
+// ---------------------------------------------------------------- dialogo: autotile
+//
+// 16 states nomeados pelo numero da JUNCAO — soma dos vizinhos presentes, na convencao de
+// dirs da BYOND (N=1, S=2, E=4, W=8). Bit ligado = tem vizinho daquele lado; lado exposto
+// = bit desligado. y=0 e' o topo do buffer, entao N = top.
+const junctionExposed = (j) => ({ top: !(j & 1), bottom: !(j & 2), right: !(j & 4), left: !(j & 8) });
+
+const autotileOpts = () => ({
+  intensity: (+$('atShade').value || 0) / 100,
+  outline: Math.max(0, Math.min(16, Math.round(+$('atOutline').value || 0))),
+  corner: Math.max(0, Math.min(32, Math.round(+$('atCorner').value || 0))),
+});
+
+// preview 4×4 com as 16 variantes do frame atual (canvas so' pra EXIBIR, como sempre)
+function renderAutotilePreview() {
+  const st = curState();
+  if (!st || !$('dlgAutotile').open) return;
+  const base = st.frames[fidx(st, sel.f, sel.d)];
+  const opts = autotileOpts();
+  const W = doc.width, H = doc.height, pad = 2;
+  const cv = $('atPreview');
+  cv.width = 4 * W + 3 * pad;
+  cv.height = 4 * H + 3 * pad;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  for (let j = 0; j < 16; j++) {
+    const v = P.autotileVariant(base, W, H, junctionExposed(j), opts);
+    ctx.putImageData(new ImageData(v, W, H), (j % 4) * (W + pad), Math.floor(j / 4) * (H + pad));
+  }
+}
+
+$('btnAutotile').onclick = () => {
+  if (!doc) return;
+  if (!curState()) return toast('Este DMI não tem state pra virar autotile', true);
+  commitFloatIfAny();
+  const st = curState();
+  const m = Math.min(doc.width, doc.height);
+  $('atPrefix').value = st.name ? `${st.name}-` : '';
+  $('atShade').value = 15;
+  $('atShadeV').textContent = '15';
+  $('atOutline').value = Math.max(1, m >> 4);
+  $('atCorner').value = Math.max(1, Math.round(m / 10));
+  $('atInfo').textContent = st.frameCount * st.dirs > 1
+    ? `Cada um dos 16 states herda os ${st.frameCount} frame(s) × ${st.dirs} direção(ões) do state atual.`
+    : '';
+  $('dlgAutotile').showModal();
+  renderAutotilePreview();
+};
+
+for (const id of ['atShade', 'atOutline', 'atCorner']) {
+  $(id).oninput = () => {
+    $('atShadeV').textContent = $('atShade').value;
+    renderAutotilePreview();
+  };
+}
+
+// aplica no CLIQUE do OK (o evento 'close' e' assincrono e chega tarde no headless)
+$('btnAutotileOk').onclick = () => {
+  if (!doc || !curState()) return;
+  const st = curState();
+  const opts = autotileOpts();
+  const prefix = $('atPrefix').value.trim();
+  structural(() => {
+    gridSel.clear();
+    const created = [];
+    for (let j = 0; j < 16; j++) {
+      created.push({
+        name: `${prefix}${j}`,
+        dirs: st.dirs, frameCount: st.frameCount,
+        delays: [...st.delays], loop: st.loop, rewind: st.rewind, movement: st.movement,
+        hotspots: [...st.hotspots], trim: null,
+        frames: st.frames.map((f) => P.autotileVariant(f, doc.width, doc.height, junctionExposed(j), opts)),
+      });
+    }
+    doc.states.splice(sel.s + 1, 0, ...created);
+  });
+  toast(`16 states de autotile criados (${prefix}0 a ${prefix}15)`);
+};
+
+// ---------------------------------------------------------------- dialogo: textura
+//
+// Preenche com ruido ou voronoi (pixels.js) — deterministico pela semente, entao o preview
+// ao vivo e o resultado final sao IDENTICOS, e refazer com a mesma semente reproduz o padrao.
+
+let texBase = null; // frame antes do preview ao vivo (mesmo padrao do matiz)
+
+const texColors = () =>
+  [...$('txColors').querySelectorAll('.tx-color')]
+    .filter((row) => row.querySelector('input[type=checkbox]').checked)
+    .map((row) => hex2rgb(row.querySelector('input[type=color]').value));
+
+const texOpts = () => ({
+  seed: Math.max(0, Math.round(+$('txSeed').value || 0)),
+  scale: Math.max(1, Math.min(8, Math.round(+$('txScale').value || 1))),
+  cells: Math.max(2, Math.min(64, Math.round(+$('txCells').value || 8))),
+  onlyOpaque: $('txOpaque').checked,
+});
+
+// regiao alvo: a selecao retangular se houver, senao o frame inteiro
+const texRegion = () =>
+  selRect
+    ? { x1: selRect.x, y1: selRect.y, x2: selRect.x + selRect.w - 1, y2: selRect.y + selRect.h - 1 }
+    : { x1: 0, y1: 0, x2: doc.width - 1, y2: doc.height - 1 };
+
+function texApply(px, region) {
+  const kind = document.querySelector('input[name="txkind"]:checked').value;
+  const { seed, scale, cells, onlyOpaque } = texOpts();
+  const colors = texColors();
+  if (!colors.length) return 0;
+  return kind === 'voronoi'
+    ? P.voronoiFill(px, doc.width, doc.height, region.x1, region.y1, region.x2, region.y2, colors, { cells, seed, onlyOpaque })
+    : P.noiseFill(px, doc.width, doc.height, region.x1, region.y1, region.x2, region.y2, colors, { seed, scale, onlyOpaque });
+}
+
+// 4 cores derivadas da cor atual (base, sombra, luz, sombra forte — a ultima desligada)
+function texColorRows(base) {
+  const mul = (c, f) => ({ r: Math.round(c.r * f), g: Math.round(c.g * f), b: Math.round(c.b * f) });
+  const mix = (c, f) => ({ r: Math.round(c.r + (255 - c.r) * f), g: Math.round(c.g + (255 - c.g) * f), b: Math.round(c.b + (255 - c.b) * f) });
+  const box = $('txColors');
+  box.innerHTML = '';
+  for (const [c, on] of [[base, true], [mul(base, 0.78), true], [mix(base, 0.18), true], [mul(base, 0.55), false]]) {
+    const row = document.createElement('label');
+    row.className = 'chk tx-color';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.checked = on;
+    const col = document.createElement('input');
+    col.type = 'color';
+    col.value = rgb2hex(c);
+    row.append(chk, col);
+    box.append(row);
+  }
+}
+
+function texPreview() {
+  if (!texBase || !$('dlgTexture').open) return;
+  const px = texBase.slice();
+  texApply(px, texRegion());
+  renderEditor(px);
+}
+
+$('btnTexture').onclick = () => {
+  if (!doc) return;
+  if (!curState()) return toast('Este DMI não tem frame pra texturizar', true);
+  commitFloatIfAny();
+  texBase = curFrame().slice();
+  texColorRows(color);
+  syncScopeOption('txSelWrap', 'txSelLbl', 'txscope');
+  $('txScopeLbl').textContent = selRect ? `a seleção (${selRect.w}×${selRect.h}) deste frame` : 'este frame';
+  $('dlgTexture').showModal();
+  texPreview();
+};
+
+for (const el of document.querySelectorAll('input[name="txkind"]')) {
+  el.onchange = () => {
+    const vor = el.value === 'voronoi' && el.checked;
+    $('txScaleWrap').hidden = vor;
+    $('txCellsWrap').hidden = !vor;
+    texPreview();
+  };
+}
+for (const id of ['txScale', 'txCells', 'txSeed', 'txOpaque']) $(id).oninput = texPreview;
+$('txColors').addEventListener('input', texPreview);
+$('btnTxSeed').onclick = (e) => {
+  e.preventDefault();
+  $('txSeed').value = Math.floor(Math.random() * 100000);
+  texPreview();
+};
+
+$('btnTextureOk').onclick = (e) => {
+  if (!doc || !curState()) return;
+  if (!texColors().length) {
+    e.preventDefault(); // sem cor nao ha' o que aplicar: segura o dialogo aberto
+    return toast('Marque pelo menos uma cor', true);
+  }
+  const scope = document.querySelector('input[name="txscope"]:checked').value;
+  const region = texRegion(); // ANTES do structural(), que zera a selecao
+  let n = 0;
+  if (scope === 'frame') {
+    editFrame((px) => { n = texApply(px, region); });
+  } else {
+    const targets = targetFrames();
+    structural(() => {
+      const st = curState();
+      for (const i of targets) n += texApply(st.frames[i], region);
+    });
+  }
+  texBase = null;
+  docColors = collectDocColors(doc);
+  renderPalette();
+  toast(`Textura aplicada — ${n} pixels`);
+};
+
+// cancelou: volta a mostrar o frame real (o preview ao vivo estava por cima)
+$('dlgTexture').addEventListener('close', () => {
+  texBase = null;
+  if (doc && curState()) renderEditor();
+});
+
 // ---------------------------------------------------------------- import de imagem
 //
 // PNG vai pro servidor (nosso codec, byte a byte, sem canvas — a invariante do projeto).
@@ -1980,6 +2180,7 @@ async function importImageFile(file) {
     impSkip.clear();
     impSkipTotal = -1;
     impBgManual = false;
+    impTolOv.clear();
     document.querySelector(`input[name="imode"][value="${aligned ? 'slice' : 'reduce'}"]`).checked = true;
 
     // Sem alfa nenhum (JPEG/BMP sempre) o fundo vem opaco — mas só oferecemos remover
@@ -2013,10 +2214,11 @@ $('dlgImport').addEventListener('close', () => {
   if ($('dlgImport').open || impOpening) return;
   pendingImport = null;
   importResult = null;
-  impCache = { key: null, frames: null };
+  impCache = { key: null, frames: null, cleared: 0 };
   impSkip.clear();
   impSkipTotal = -1;
   impBgManual = false;
+  impTolOv.clear();
 });
 
 const impMode = () => document.querySelector('input[name="imode"]:checked').value;
@@ -2073,14 +2275,15 @@ function impSliceOk() {
   return cw === tw && ch === th;
 }
 
-// A cor do fundo é decidida UMA vez, por voto entre as bordas de todos os frames.
+// A cor do fundo é decidida UMA vez, por voto entre as bordas de todos os quadros da FONTE.
 // Decidir por frame faria frames da mesma animação limparem cores diferentes (a lição do
 // video.py do proper-pixel-art: mesma decisão global pra todos os frames, senão cintila).
-function importBgColor(frames, tw, th) {
+function importBgColor() {
   if (impBgManual) return hex2rgb($('impBgColor').value);
+  const imp = pendingImport;
   const votes = new Map();
-  for (const f of frames) {
-    const c = P.boundaryColor(f, tw, th);
+  for (const f of imp.srcFrames) {
+    const c = P.boundaryColor(f, imp.w, imp.h);
     if (!c) continue;
     const k = (c.r << 16) | (c.g << 8) | c.b;
     votes.set(k, (votes.get(k) ?? 0) + 1);
@@ -2105,43 +2308,70 @@ function cutCell(src, w, h, x0, y0, cw, ch) {
 }
 
 // Um quadro da fonte -> um ou mais frames no tamanho ALVO (tw × th).
-function convertSource(src, w, h, mode, g, tw, th) {
+// `clear`, se vier, é a remoção de fundo: recebe (buffer, w, h, k) da CÉLULA em resolução
+// de fonte, pode mutar e devolve o buffer. Limpar por célula (e não a folha inteira) é o
+// que permite tolerância por frame — cada célula é um frame, com o flood semeado na
+// própria borda.
+function convertSource(src, w, h, mode, g, tw, th, clear = null) {
   if (mode === 'slice' || mode === 'reduce') {
     const { cols, rows, offX, offY, cw, ch } = g;
     return Array.from({ length: cols * rows }, (_, k) => {
       const x0 = offX + (k % cols) * cw;
       const y0 = offY + Math.floor(k / cols) * ch;
-      const cell = cutCell(src, w, h, x0, y0, cw, ch);
+      let cell = cutCell(src, w, h, x0, y0, cw, ch); // sempre um buffer novo: mutar é seguro
+      if (clear) cell = clear(cell, cw, ch, k);
       return mode === 'slice' && cw === tw && ch === th
-        ? cell // corte exato: os bytes da célula, intocados
+        ? cell // corte exato: os bytes da célula, intocados (fora o fundo removido)
         : P.downsampleDominant(cell, cw, ch, tw, th);
     });
   }
+  const base = clear ? clear(src.slice(), w, h, 0) : src; // clone: src é a fonte viva
   return [
-    mode === 'scale' ? P.scaleNearest(src, w, h, tw, th)
-    : mode === 'center' ? P.placed(src, w, h, tw, th, Math.round((tw - w) / 2), Math.round((th - h) / 2))
-    : P.placed(src, w, h, tw, th, 0, 0),
+    mode === 'scale' ? P.scaleNearest(base, w, h, tw, th)
+    : mode === 'center' ? P.placed(base, w, h, tw, th, Math.round((tw - w) / 2), Math.round((th - h) / 2))
+    : P.placed(base, w, h, tw, th, 0, 0),
   ];
 }
 
-// A conversão é o estágio caro (downsampleDominant varre a fonte inteira) e depende só de
-// (mode, cols, rows, alvo) — cores, tolerância, fundo e a seleção de células não a afetam.
-// Memoizar deixa os sliders e os cliques instantâneos SEM precisar amostrar frames, então o
-// preview continua idêntico ao resultado final.
-let impCache = { key: null, frames: null };
+// O fundo é removido NA FONTE, antes do downsample. É onde dá certo: em alta resolução o
+// halo de anti-aliasing é uma rampa fina (1–2px) entre o fundo e o contorno — limpo o fundo,
+// a regra de maioria do downsample descarta a rampa e a célula da borda pega a cor do
+// SPRITE. Limpar só no resultado (como era) não tem conserto: lá o halo já virou a cor
+// dominante de células inteiras, e um cinza a meio caminho do contorno preto está mais
+// longe do fundo branco que o próprio sprite — nenhuma tolerância separa os dois.
+//
+// A conversão é o estágio caro (downsampleDominant varre a fonte inteira) e agora depende
+// também do fundo/tolerância — só paleta e seleção de células ficam fora da chave. Memoizar
+// deixa os cliques instantâneos SEM precisar amostrar frames, então o preview continua
+// idêntico ao resultado final.
+let impCache = { key: null, frames: null, cleared: 0 };
 
-const impCacheKey = (mode, g, tw, th) => `${mode}|${gridKey(g)}|${tw}|${th}`;
+// tolerâncias por frame na chave do cache (qualquer override novo = reconverter)
+const impTolKey = () => [...impTolOv].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}:${v}`).join(',');
 
-function convertedFrames(mode, g, tw, th) {
-  const key = impCacheKey(mode, g, tw, th);
+const impCacheKey = (mode, g, tw, th, bgMode, bg, tol) =>
+  `${mode}|${gridKey(g)}|${tw}|${th}|${bg ? `${bgMode}|${bg.r},${bg.g},${bg.b}|${tol}|${impTolKey()}` : 'none'}`;
+
+// células por quadro da fonte = quantos frames cada srcFrame vira (1 nos modos de frame único)
+const impCellsPer = (mode, g) => (mode === 'slice' || mode === 'reduce' ? g.cols * g.rows : 1);
+
+function convertedFrames(mode, g, tw, th, bgMode, bgColor, tol) {
+  const key = impCacheKey(mode, g, tw, th, bgMode, bgColor, tol);
   if (impCache.key !== key) {
     const imp = pendingImport;
-    impCache = {
-      key,
-      frames: imp.srcFrames.flatMap((s) => convertSource(s, imp.w, imp.h, mode, g, tw, th)),
-    };
+    const per = impCellsPer(mode, g);
+    let cleared = 0;
+    const frames = imp.srcFrames.flatMap((s, si) =>
+      convertSource(s, imp.w, imp.h, mode, g, tw, th, !bgColor ? null : (cell, cw, ch, k) => {
+        const t = impTolOv.get(si * per + k) ?? tol;
+        cleared += bgMode === 'exact'
+          ? P.clearColorExact(cell, bgColor, t)
+          : P.clearColorFlood(cell, cw, ch, bgColor, t);
+        return cell;
+      }));
+    impCache = { key, cleared, frames };
   }
-  return impCache.frames;
+  return impCache;
 }
 
 function toggleSkip(i) {
@@ -2158,17 +2388,26 @@ function buildImportFrames() {
   const mode = impMode();
   const g = impGrid();
   const { tw, th } = impTarget();
+  // Fundo ANTES da paleta: quantizar primeiro deslocaria a cor do fundo e a cor escolhida
+  // no picker (que veio da imagem original) não casaria mais com nada.
+  const bgMode = impBgMode();
+  const tol = +$('impTol').value || 0;
+  const bgColor = bgMode === 'none' ? null : importBgColor();
 
-  const all = convertedFrames(mode, g, tw, th);
-
-  // a seleção só faz sentido enquanto a geometria não muda
-  if (all.length !== impSkipTotal) {
+  // A seleção e as tolerâncias por frame são indexadas por célula: quando a geometria muda a
+  // contagem, ambas caducam — e tem que ser ANTES de converter, senão a conversão desta
+  // rodada ainda aplicaria os overrides velhos nos índices errados.
+  const expected = imp.srcFrames.length * impCellsPer(mode, g);
+  if (expected !== impSkipTotal) {
     impSkip.clear();
-    impSkipTotal = all.length;
+    impTolOv.clear();
+    impSkipTotal = expected;
   }
 
+  const { frames: all, cleared: clearedSrc } = convertedFrames(mode, g, tw, th, bgMode, bgColor, tol);
+
   // clona só o que vai entrar: applyPalette e clearColor* mutam in-place e o cache tem que
-  // ficar intacto. As decisões globais (paleta, fundo) veem só os frames escolhidos.
+  // ficar intacto. As decisões globais (paleta) veem só os frames escolhidos.
   const kept = [];
   const frames = [];
   all.forEach((f, i) => {
@@ -2177,18 +2416,17 @@ function buildImportFrames() {
     frames.push(f.slice());
   });
 
-  const bgMode = impBgMode();
-  const tol = +$('impTol').value || 0;
-  // Fundo ANTES da paleta: quantizar primeiro deslocaria a cor do fundo e a cor escolhida
-  // no picker (que veio da imagem original) não casaria mais com nada.
-  const bgColor = bgMode === 'none' || !frames.length ? null : importBgColor(frames, tw, th);
-  let cleared = 0;
+  // Segunda passada, agora no resultado (barata: são frames tw×th): pega célula da borda
+  // que ainda saiu na cor do fundo — a limpeza principal aconteceu na fonte, dentro de
+  // convertedFrames. Respeita a tolerância por frame.
+  let cleared = clearedSrc;
   if (bgColor) {
-    for (const f of frames) {
+    frames.forEach((f, k) => {
+      const t = impTolOv.get(kept[k]) ?? tol;
       cleared += bgMode === 'exact'
-        ? P.clearColorExact(f, bgColor, tol)
-        : P.clearColorFlood(f, tw, th, bgColor, tol);
-    }
+        ? P.clearColorExact(f, bgColor, t)
+        : P.clearColorFlood(f, tw, th, bgColor, t);
+    });
   }
 
   // Paleta: construída sobre TODOS os frames de uma vez (paleta por frame faria a
@@ -2309,6 +2547,7 @@ function renderImportThumbs(res) {
     c.height = res.th;
     c.getContext('2d').putImageData(new ImageData(px, res.tw, res.th), 0, 0);
     c.classList.toggle('off', impSkip.has(i));
+    c.classList.toggle('tolov', impTolOv.has(i)); // marca quem tem tolerância própria
   });
 }
 
@@ -2386,8 +2625,29 @@ function renderImportZoom(res) {
   $('impZoomLbl').textContent =
     `frame ${i + 1} de ${res.all.length} · ${sw}×${sh} → ${res.tw}×${res.th}` +
     (impSkip.has(i) ? ' · EXCLUÍDO' : '') +
+    (impTolOv.has(i) ? ` · tolerância própria: ${impTolOv.get(i)}` : '') +
     ' · Alt+clique no resultado pega a cor do fundo';
+
+  // slider de tolerância DESTE frame: segue o alvo do zoom; sem override, espelha a global
+  $('impTolFRow').hidden = impBgMode() === 'none';
+  const ov = impTolOv.get(i);
+  $('impTolF').value = ov ?? +$('impTol').value;
+  $('impTolFV').textContent = ov ?? `${$('impTol').value} (global)`;
+  $('btnImpTolFReset').disabled = ov == null;
 }
+
+$('impTolF').oninput = () => {
+  impTolOv.set(impZoomAt, +$('impTolF').value);
+  $('impTolFV').textContent = $('impTolF').value;
+  $('btnImpTolFReset').disabled = false;
+  impRefreshSoon(60);
+};
+
+$('btnImpTolFReset').onclick = (e) => {
+  e.preventDefault(); // dentro de <form method="dialog">: sem isso o diálogo fecharia
+  impTolOv.delete(impZoomAt);
+  refreshImport();
+};
 
 // Alt+clique no resultado: a cor já passou pela redução — é exatamente o tom que o clearColor*
 // vai comparar (pegar da fonte devolveria o #ffffff que virou #fefdfe depois da mediana).
@@ -2521,7 +2781,9 @@ async function refreshImport() {
     return;
   }
 
-  const heavy = impCache.key !== impCacheKey(impMode(), g, tw, th);
+  const bgm = impBgMode();
+  const heavy = impCache.key !== impCacheKey(impMode(), g, tw, th, bgm,
+    bgm === 'none' ? null : importBgColor(), +$('impTol').value || 0);
   if (heavy && imp.srcFrames.length * imp.w * imp.h > 4e6) {
     $('impPrevLbl').textContent = 'processando…';
     await new Promise((r) => setTimeout(r, 0)); // deixa o browser pintar antes do laço pesado
@@ -2565,6 +2827,8 @@ async function refreshImport() {
     impBgMode() === 'none' ? 'O alfa da imagem é preservado como está.'
     : c ? `Fundo <span class="imp-swatch" style="background:${rgb2hex(c)}"></span> ${rgb2hex(c)} `
         + `(${impBgManual ? 'escolhido por você' : 'detectado na borda'}) — ${res.cleared} pixels limpos.`
+        + (impTolOv.size ? ` ${impTolOv.size} frame(s) com tolerância própria.` : '')
+        + (imp.animated && impTolOv.size ? ' <b>Atenção:</b> tolerância por quadro numa animação pode cintilar.' : '')
     : 'Nenhuma cor opaca na borda: a imagem já tem fundo transparente.';
 }
 
@@ -2707,6 +2971,21 @@ async function download(url, blob, filename) {
 
 const exportBase = () => `${doc.name}_${(curState()?.name || 'state').replace(/[^\w-]+/g, '_')}`;
 
+// Escala do export: amplia os frames por nearest (pixels.js, sem canvas) ANTES de mandar
+// pro encoder — o servidor nem fica sabendo. positions do sheet ficam em unidades de
+// célula, então escalam junto de graça.
+const expScale = () => Math.max(1, +$('expScale').value || 1);
+const expSuffix = () => (expScale() > 1 ? `_${expScale()}x` : '');
+function scaleExport(frames) {
+  const k = expScale();
+  if (k === 1) return { frames, w: doc.width, h: doc.height };
+  return {
+    frames: frames.map((f) => P.scaleNearest(f, doc.width, doc.height, doc.width * k, doc.height * k)),
+    w: doc.width * k,
+    h: doc.height * k,
+  };
+}
+
 $('btnExpGif').onclick = async () => {
   if (!doc) return;
   if (!curState()) return toast('Este DMI não tem state pra exportar', true);
@@ -2715,13 +2994,13 @@ $('btnExpGif').onclick = async () => {
     const st = curState();
     const seq = [...Array(st.frameCount).keys()];
     if (st.rewind && st.frameCount > 2) seq.push(...seq.slice(1, -1).reverse());
-    const frames = seq.map((f) => st.frames[fidx(st, f, sel.d)]);
+    const { frames, w, h } = scaleExport(seq.map((f) => st.frames[fidx(st, f, sel.d)]));
     const delays = seq.map((f) => Math.max(2, Math.round((st.delays[f] ?? 1) * 10)));
     const blob = encodeEnvelope(
-      { width: doc.width, height: doc.height, delays, loop: st.loop, count: frames.length },
+      { width: w, height: h, delays, loop: st.loop, count: frames.length },
       frames
     );
-    await download('/api/export/gif', blob, `${exportBase()}_${DIR_NAMES[sel.d]}.gif`);
+    await download('/api/export/gif', blob, `${exportBase()}_${DIR_NAMES[sel.d]}${expSuffix()}.gif`);
   } catch (err) {
     toast(err.message, true);
   }
@@ -2794,13 +3073,14 @@ function updateSheetPreview() {
 $('dlgSheet').addEventListener('close', async () => {
   if ($('dlgSheet').returnValue !== 'ok' || !doc) return;
   try {
-    const { frames, positions } = sheetLayout();
-    if (!frames.length) return toast('Nenhum state selecionado', true);
+    const { frames: raw, positions } = sheetLayout();
+    if (!raw.length) return toast('Nenhum state selecionado', true);
+    const { frames, w, h } = scaleExport(raw);
     const blob = encodeEnvelope(
-      { width: doc.width, height: doc.height, count: frames.length, positions },
+      { width: w, height: h, count: frames.length, positions },
       frames
     );
-    await download('/api/export/png', blob, `${doc.name}_sheet.png`);
+    await download('/api/export/png', blob, `${doc.name}_sheet${expSuffix()}.png`);
   } catch (err) {
     toast(err.message, true);
   }
@@ -2811,8 +3091,9 @@ $('btnExpFrame').onclick = async () => {
   if (!curState()) return toast('Este DMI não tem frame pra exportar', true);
   commitFloatIfAny();
   try {
-    const blob = encodeEnvelope({ width: doc.width, height: doc.height, cols: 1, count: 1 }, [curFrame()]);
-    await download('/api/export/png', blob, `${exportBase()}_f${sel.f + 1}${DIR_NAMES[sel.d]}.png`);
+    const { frames, w, h } = scaleExport([curFrame()]);
+    const blob = encodeEnvelope({ width: w, height: h, cols: 1, count: 1 }, frames);
+    await download('/api/export/png', blob, `${exportBase()}_f${sel.f + 1}${DIR_NAMES[sel.d]}${expSuffix()}.png`);
   } catch (err) {
     toast(err.message, true);
   }

@@ -49,6 +49,7 @@
       <div class="row">
         <button id="btnImport" title="Importar PNG, JPEG, WEBP, BMP ou GIF como state novo — GIF animado vira um state animado (ou arraste o arquivo pra cá)">Importar imagem</button>
         <button id="btnDups" title="Procurar states e frames duplicados">Duplicatas</button>
+        <button id="btnAutotile" title="Gerar os 16 states de autotile (junções N/S/E/W) a partir do state atual">Autotile</button>
         <button id="btnStateCopy" title="Copiar o state (cole em outra aba/arquivo)">&#10697; state</button>
         <button id="btnStatePaste" title="Colar o state copiado">&#8681; state</button>
       </div>
@@ -125,6 +126,14 @@
         <button id="btnExpGif" title="Exportar a animação da direção atual como GIF">GIF</button>
         <button id="btnExpSheet" title="Exportar o state como spritesheet PNG (colunas = direções, linhas = frames)">PNG folha</button>
         <button id="btnExpFrame" title="Exportar só o frame atual como PNG">PNG frame</button>
+        <label class="chk" title="Amplia o export (nearest, pixel perfect) — vale pro GIF, folha e frame">
+          <select id="expScale">
+            <option value="1">1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+            <option value="8">8×</option>
+          </select>
+        </label>
       </div>
     </div>
   </section>
@@ -162,6 +171,7 @@
     <div class="row adjustes">
       <button id="btnHue" title="Matiz / saturação / brilho — por frame, state ou DMI inteiro">Matiz/Sat/Brilho</button>
       <button id="btnReplace" title="Substituir uma cor exata — por frame, state ou DMI inteiro">Substituir cor</button>
+      <button id="btnTexture" title="Preencher com textura de ruído ou voronoi (determinística por semente)">Textura</button>
     </div>
   </section>
 
@@ -316,6 +326,13 @@
             <div class="imp-zoom-box"><canvas id="impZoomOut" title="Alt+clique: pegar a cor do fundo deste pixel"></canvas></div>
           </div>
         </div>
+        <div id="impTolFRow" class="imp-tolf" hidden>
+          <label class="slider">Tolerância deste frame <span id="impTolFV">12</span>
+            <input type="range" id="impTolF" min="0" max="200" value="12"
+              title="Só este frame: sobrepõe a tolerância global. Frames com tolerância própria ficam marcados nas miniaturas.">
+          </label>
+          <button id="btnImpTolFReset" class="mini" title="Este frame volta a herdar a tolerância global">usar a global</button>
+        </div>
         <p id="impZoomLbl" class="hint"></p>
       </div>
 
@@ -360,7 +377,7 @@
           <button id="btnImpBgAuto" class="mini">detectar de novo</button>
           <label class="slider">Tolerância <span id="impTolV">12</span>
             <input type="range" id="impTol" min="0" max="200" value="12"
-              title="O halo entre o fundo e o contorno é a mistura dos dois: fica LONGE da cor do fundo (até ~130 num contorno preto sobre branco). Com valores altos prefira 'só o que encosta na borda' — 'a cor inteira' come o miolo do sprite.">
+              title="Diferença máxima por canal em relação à cor do fundo. A limpeza acontece na imagem ORIGINAL, antes de reduzir: o halo fino de anti-aliasing some sozinho na redução. Suba se sobrar fundo (ruído de JPEG); com valores altos prefira 'só o que encosta na borda' — 'a cor inteira' come o miolo do sprite.">
           </label>
         </div>
         <p id="impBgInfo" class="hint"></p>
@@ -401,6 +418,61 @@
   <button data-act="dup">Duplicar <kbd>Ctrl+C/V</kbd></button>
   <button data-act="del" class="danger">Excluir <kbd>Del</kbd></button>
 </div>
+
+<dialog id="dlgAutotile">
+  <form method="dialog">
+    <h3>Gerar autotile (16 states)</h3>
+    <p class="hint">Cria 16 states nomeados pelo número da junção — a soma dos vizinhos presentes,
+      na convenção de dirs da BYOND (<b>N=1, S=2, E=4, W=8</b>). O state atual é o tile cheio
+      (junção 15); os outros ganham sombra, contorno e canto arredondado nos lados expostos.</p>
+    <div class="at-preview-box">
+      <canvas id="atPreview"></canvas>
+    </div>
+    <label class="slider">Sombra <span id="atShadeV">15</span>%
+      <input type="range" id="atShade" min="0" max="50" value="15">
+    </label>
+    <div class="cols3">
+      <label>Contorno (px) <input type="number" id="atOutline" min="0" max="16" value="1"></label>
+      <label>Canto (px) <input type="number" id="atCorner" min="0" max="32" value="3"></label>
+      <label>Prefixo do nome <input type="text" id="atPrefix" value="" placeholder="(nenhum)"></label>
+    </div>
+    <p id="atInfo" class="hint"></p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button id="btnAutotileOk" value="ok" class="primary">Criar 16 states</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlgTexture">
+  <form method="dialog">
+    <h3>Preencher com textura</h3>
+    <div class="radios">
+      <span class="hint">Padrão:</span>
+      <label class="chk"><input type="radio" name="txkind" value="noise" checked> ruído (grãos)</label>
+      <label class="chk"><input type="radio" name="txkind" value="voronoi"> voronoi (pedras/células)</label>
+    </div>
+    <div id="txColors" class="tx-colors"></div>
+    <div class="cols3">
+      <label id="txScaleWrap">Grão (px) <input type="number" id="txScale" min="1" max="8" value="1"></label>
+      <label id="txCellsWrap" hidden>Células <input type="number" id="txCells" min="2" max="64" value="8"></label>
+      <label>Semente <input type="number" id="txSeed" min="0" max="99999" value="42"></label>
+      <label>&nbsp;<button id="btnTxSeed" class="mini">sortear</button></label>
+    </div>
+    <label class="chk"><input type="checkbox" id="txOpaque" checked> só onde já tem pixel (preserva o alfa)</label>
+    <div class="radios">
+      <span class="hint">Aplicar em:</span>
+      <label class="chk"><input type="radio" name="txscope" value="frame" checked> <span id="txScopeLbl">este frame</span></label>
+      <label class="chk" id="txSelWrap" hidden><input type="radio" name="txscope" value="selframes"> <span id="txSelLbl">frames selecionados</span></label>
+    </div>
+    <p class="hint">Com uma seleção ativa, preenche só o retângulo selecionado. A textura é
+      determinística: a mesma semente produz sempre o mesmo padrão.</p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button id="btnTextureOk" value="ok" class="primary">Preencher</button>
+    </menu>
+  </form>
+</dialog>
 
 <dialog id="dlgDups">
   <form method="dialog">

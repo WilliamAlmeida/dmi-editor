@@ -136,17 +136,33 @@ veja o [README](./README.md).
   o resultado tem.
 - **Fundo** no import: *manter*; *remover só o que encosta na borda* (flood — preserva
   pixels da cor do fundo cercados pelo sprite); ou *remover a cor inteira, onde estiver*.
-  A cor vem detectada da borda (e é decidida **uma vez** pra todos os frames), mas você
-  pode **escolhê-la no seletor de cor** ou pegá-la com **Alt+clique** na imagem, numa
-  miniatura ou no **zoom** — nem todo fundo é branco. A **tolerância** (0–200) existe por dois
-  motivos: fundo de imagem gerada por IA vem com ruído, nunca chapado; e o **halo** de
-  anti-aliasing entre o fundo e o contorno é a *mistura* dos dois — num contorno preto sobre
-  branco, os cinzas do halo distam até ~130 da cor do fundo, então removê-los pede tolerância
-  alta. Com valores altos use *só o que encosta na borda* (flood): ele para no contorno; já
+  A cor vem detectada da borda da **imagem original** (e é decidida **uma vez** pra todos
+  os frames), mas você pode **escolhê-la no seletor de cor** ou pegá-la com **Alt+clique**
+  na imagem, numa miniatura ou no **zoom** — nem todo fundo é branco.
+  A remoção acontece **na imagem original, antes da redução**: em alta resolução o **halo**
+  de anti-aliasing (a mistura entre o fundo e o contorno) é uma rampa fina de 1–2 pixels, e
+  a redução dominante descarta sozinha o que sobra dela — a célula na borda do sprite pega
+  a cor do *sprite*, não um cinza misturado. É isso que faz a borda sair *pixel perfect* em
+  vez de borrada. A **tolerância** (0–200) cobre o ruído do fundo (JPEG e imagem de IA
+  nunca têm fundo chapado); com valores altos use *só o que encosta na borda* (flood) —
   *a cor inteira* com tolerância alta come o miolo do sprite.
   Quando a imagem não tem alfa nenhum (JPEG e BMP nunca têm) e a borda é de uma cor só,
   o *flood* já vem marcado — mas só nesse caso: numa **foto**, onde o fundo não é chapado,
   ele fica desmarcado pra não mutilar a imagem.
+- **Tolerância por frame**: além da global, cada frame pode ter a sua — o slider
+  "tolerância deste frame" fica no painel de zoom e segue o frame que está lá (passe o
+  mouse numa miniatura pra mirar). Serve pra folha onde uma célula tem fundo mais sujo que
+  as outras. Frames com tolerância própria ficam com a **borda destacada na miniatura**, e
+  "usar a global" desfaz o override. A *cor* do fundo continua uma só pra todos (senão
+  animação cintila) — e numa fonte animada o diálogo avisa que tolerância por quadro
+  também pode cintilar. Mudar a grade (contagem de células) descarta os overrides.
+- **Autotile** (botão no painel de states): gera **16 states** a partir do state atual,
+  nomeados pelo número da junção na convenção de dirs da BYOND (**N=1, S=2, E=4, W=8**;
+  bit ligado = tem vizinho; 15 = cercado = o tile intacto). Cada variante ganha, nos lados
+  **expostos**: sombreamento (topo/esquerda clareiam, baixo/direita escurecem), **contorno**
+  escurecido e **canto arredondado** onde dois lados expostos se encontram. Sombra, contorno,
+  canto e o prefixo do nome são ajustáveis, com preview 4×4 ao vivo; o state original não é
+  tocado e `Ctrl+Z` desfaz os 16 de uma vez. Herda frames e direções do state base.
 
 ## Cores
 
@@ -160,6 +176,13 @@ veja o [README](./README.md).
   Pixels 100% transparentes nunca são alterados.
 - **Substituir cor**: troca um RGB exato por outro preservando o alfa, nos mesmos
   escopos. Informa quantos pixels trocou.
+- **Textura** (`Ajustes de cor`): preenche com **ruído** (grãos, com tamanho de grão
+  ajustável) ou **voronoi** (células tipo pedra/cobblestone), usando até 4 cores — o
+  diálogo já abre com variações da cor atual (base, sombra, luz). **Determinística por
+  semente**: o preview ao vivo é exatamente o resultado, e a mesma semente reproduz sempre
+  o mesmo padrão ("sortear" troca a semente). Com uma **seleção** ativa preenche só o
+  retângulo; "só onde já tem pixel" preserva o alfa (textura por cima do sprite), desmarcado
+  preenche tudo (bom pra turf). Escopo: este frame ou os frames selecionados na grade.
 
 ## Preview e exportação
 
@@ -172,6 +195,9 @@ veja o [README](./README.md).
   frame×direção — o mesmo layout que o Importar PNG entende, então exportar → editar
   fora → importar fecha o ciclo.
 - **PNG frame**: baixa só o frame atual.
+- **Escala** (1× a 8×): amplia qualquer export por nearest (pixel perfect, sem borrão) —
+  bom pra postar em fórum/Discord, onde 32×32 vira um selo ilegível. Vale pro GIF, pra
+  folha e pro frame; o nome do arquivo ganha o sufixo (`_4x`).
 
 ## Arquivo e segurança
 

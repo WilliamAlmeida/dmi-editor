@@ -173,7 +173,10 @@ aside {
 .row button { font-size: 11px; padding: 3px 8px; }
 
 /* ---------- stage ---------- */
-#stage { grid-area: stage; display: flex; flex-direction: column; min-width: 0; }
+/* min-height:0 além do min-width: item de grid com overflow visível tem altura mínima =
+   conteúdo, então a linha 1fr crescia junto com o canvas em zoom alto e empurrava o footer
+   pra fora da tela — quem tem que rolar é o #canvasWrap, não o grid esticar. */
+#stage { grid-area: stage; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 #toolbar {
   display: flex; align-items: center; gap: 4px;
@@ -437,12 +440,32 @@ dialog .cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
   border: 1px solid var(--line); border-radius: 3px; background: #14161a;
 }
 .imp-thumbs canvas.off { opacity: .28; filter: grayscale(1); border-color: var(--danger); }
+.imp-thumbs canvas.tolov { border-color: var(--accent); }
+.imp-tolf { display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
+.imp-tolf .slider { flex: 1; min-width: 0; }
 .imp-thumb-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #impPrevLbl { margin: 6px 0 0; }
 .imp-thumb-foot .mini { margin: 6px 0 0; }
 
 .imp-bg-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .imp-bg-row input[type="color"] { width: 34px; padding: 0; }
+
+/* ---------- autotile / textura ---------- */
+.at-preview-box {
+  display: flex; align-items: center; justify-content: center;
+  padding: 10px; margin-bottom: 10px;
+  background-color: #2b2f37;
+  background-image:
+    linear-gradient(45deg, #363b45 25%, transparent 25%, transparent 75%, #363b45 75%),
+    linear-gradient(45deg, #363b45 25%, transparent 25%, transparent 75%, #363b45 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.at-preview-box canvas { image-rendering: pixelated; width: min(100%, 340px); display: block; }
+.tx-colors { display: flex; gap: 10px; margin: 8px 0; }
+.tx-colors .tx-color { gap: 3px; }
+.tx-colors input[type="color"] { width: 34px; padding: 0; }
 .imp-bg-row .slider { flex: 1; min-width: 120px; margin: 0; }
 .imp-swatch {
   display: inline-block; width: 9px; height: 9px; vertical-align: -1px;

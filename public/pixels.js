@@ -519,6 +519,132 @@ export function replaceColor(px, from, to) {
   return n;
 }
 
+// ---- autotile (adaptado do texel-studio, Emir Yaman Sivrikaya — source-available) ----
+//
+// Gera a variante de um tile pra um conjunto de lados EXPOSTOS (= sem vizinho).
+// Tres efeitos por pixel, na ordem (cada um le' o resultado do anterior):
+//   1. sombreamento: clareia a faixa junto ao topo/esquerda expostos, escurece baixo/direita
+//      (topo/esquerda recebem luz; a faixa e' 1/5 do lado menor, com decaimento linear);
+//   2. contorno: escurece `outline` px das bordas expostas;
+//   3. canto: onde DOIS lados expostos se encontram, arredonda (os pixels do triangulo
+//      x+y < corner viram transparentes).
+// Pixels quase transparentes (a < 25) nao sao tocados. exp = {top,bottom,left,right}.
+export function autotileVariant(src, w, h, exp, opts = {}) {
+  const {
+    intensity = 0.15,
+    outline = Math.max(1, Math.min(w, h) >> 4),
+    corner = Math.max(1, Math.round(Math.min(w, h) / 10)),
+    darken = 0.4,
+  } = opts;
+  const band = Math.max(2, Math.round(Math.min(w, h) / 5));
+  const px = src.slice();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = idx(w, x, y);
+      if (px[o + 3] < 25) continue;
+      const db = h - 1 - y, dr = w - 1 - x;
+
+      if (corner > 0 && (
+        (exp.top && exp.left && x + y < corner) ||
+        (exp.top && exp.right && dr + y < corner) ||
+        (exp.bottom && exp.left && x + db < corner) ||
+        (exp.bottom && exp.right && dr + db < corner)
+      )) {
+        px[o] = px[o + 1] = px[o + 2] = px[o + 3] = 0;
+        continue;
+      }
+
+      let f = 0;
+      if (exp.top && y < band) f += intensity * (1 - y / band);
+      if (exp.left && x < band) f += intensity * 0.6 * (1 - x / band);
+      if (exp.bottom && db < band) f -= intensity * (1 - db / band);
+      if (exp.right && dr < band) f -= intensity * 0.6 * (1 - dr / band);
+      if (f !== 0) {
+        // Uint8ClampedArray clampa sozinho em 0..255
+        px[o] += f * 255;
+        px[o + 1] += f * 255;
+        px[o + 2] += f * 255;
+      }
+
+      if (outline > 0 && (
+        (exp.top && y < outline) || (exp.bottom && db < outline) ||
+        (exp.left && x < outline) || (exp.right && dr < outline)
+      )) {
+        px[o] *= 1 - darken;
+        px[o + 1] *= 1 - darken;
+        px[o + 2] *= 1 - darken;
+      }
+    }
+  }
+  return px;
+}
+
+// ---- fills de textura (ideia do texel-studio; determinismo por semente, nada de Math.random) ----
+
+// Hash inteiro -> [0,1). Mesma (x, y, seed) = mesmo valor, sempre: a textura e' reproduzivel
+// e o undo/redo/preview nao "sorteia" outra.
+function hashNoise(x, y, seed) {
+  let n = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 1274126177);
+  n = Math.imul(n ^ (n >>> 13), 1274126177) & 0x7fffffff;
+  n = n ^ (n >>> 16);
+  return (n & 0x7fffffff) / 0x7fffffff;
+}
+
+// Distribui as cores da lista pelo retangulo, pixel a pixel, por ruido de hash.
+// scale > 1 agrupa (granulacao mais grossa). onlyOpaque preserva o alfa existente
+// (so' pinta onde ja' ha' pixel) — sem ele, a area inteira vira opaca.
+export function noiseFill(px, w, h, x1, y1, x2, y2, colors, { seed = 42, scale = 1, onlyOpaque = false } = {}) {
+  if (!colors.length) return 0;
+  let n = 0;
+  for (let y = Math.max(0, y1); y <= Math.min(h - 1, y2); y++) {
+    for (let x = Math.max(0, x1); x <= Math.min(w - 1, x2); x++) {
+      const o = idx(w, x, y);
+      if (onlyOpaque && px[o + 3] === 0) continue;
+      const v = hashNoise(Math.floor(x / scale), Math.floor(y / scale), seed);
+      const c = colors[Math.floor(v * colors.length) % colors.length];
+      px[o] = c.r;
+      px[o + 1] = c.g;
+      px[o + 2] = c.b;
+      if (!onlyOpaque) px[o + 3] = 255;
+      n++;
+    }
+  }
+  return n;
+}
+
+// Padrao de celulas de Voronoi (pedra, cobblestone): `cells` pontos-semente espalhados por
+// hash; cada pixel ganha a cor do ponto mais proximo. Cores repetem em ciclo se cells > cores.
+export function voronoiFill(px, w, h, x1, y1, x2, y2, colors, { cells = 8, seed = 42, onlyOpaque = false } = {}) {
+  if (!colors.length) return 0;
+  const rw = x2 - x1 + 1, rh = y2 - y1 + 1;
+  const pts = [];
+  for (let i = 0; i < cells; i++) {
+    pts.push({
+      x: x1 + Math.floor(hashNoise(i, 0, seed) * rw),
+      y: y1 + Math.floor(hashNoise(0, i, seed + 99) * rh),
+      c: colors[i % colors.length],
+    });
+  }
+  let n = 0;
+  for (let y = Math.max(0, y1); y <= Math.min(h - 1, y2); y++) {
+    for (let x = Math.max(0, x1); x <= Math.min(w - 1, x2); x++) {
+      const o = idx(w, x, y);
+      if (onlyOpaque && px[o + 3] === 0) continue;
+      let best = pts[0], bd = Infinity;
+      for (const p of pts) {
+        const d = (x - p.x) * (x - p.x) + (y - p.y) * (y - p.y);
+        if (d < bd) { bd = d; best = p; }
+      }
+      px[o] = best.c.r;
+      px[o + 1] = best.c.g;
+      px[o + 2] = best.c.b;
+      if (!onlyOpaque) px[o + 3] = 255;
+      n++;
+    }
+  }
+  return n;
+}
+
 // ---- comparacao ----
 
 export function hashFrame(px) {

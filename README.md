@@ -48,7 +48,13 @@ frames repetidos dentro de um state); **gerar direções** (ex.: W = E espelhado
 **Cores** — paleta com três grupos: **salvas** (★ salva a cor atual; persiste no navegador;
 botão direito remove), **recentes** e **do arquivo**; **Matiz/Saturação/Brilho** com preview
 ao vivo e escopo *frame / state / DMI inteiro* — perfeito pra criar variações de cor de um
-item; **Substituir cor** exata (preserva alfa) nos mesmos escopos.
+item; **Substituir cor** exata (preserva alfa) nos mesmos escopos; **Textura** de ruído ou
+voronoi (pedras/células) com até 4 cores, determinística por semente — preenche o frame, a
+seleção ou os frames selecionados.
+
+**Autotile** — gera os **16 states de junção** (convenção BYOND: N=1, S=2, E=4, W=8) a
+partir do state atual, com sombreamento, contorno e canto arredondado nos lados expostos —
+parâmetros ajustáveis com preview 4×4, e `Ctrl+Z` desfaz os 16 de uma vez.
 
 **Arquivos** — **abas** (vários DMIs abertos ao mesmo tempo); **`.bak` automático** antes de
 sobrescrever; **detecção de mudança externa** (se o Dream Maker regravar o arquivo, o editor
@@ -67,9 +73,12 @@ resultante grandes, lado a lado, sobre xadrez — é onde a remoção do fundo s
 **fatiar** (corte exato), **reduzir por cor dominante** — que recupera pixel art de verdade a
 partir de sprite gerado por IA ou screenshot em alta resolução (veja
 [Reduzir sprite de IA](#reduzir-sprite-de-ia)) —, **reduzir a paleta**, **remover o fundo** e
-até **adotar o tamanho da célula como tamanho do ícone do DMI**. Exportar **GIF animado** da
-direção atual, **spritesheet PNG** do state (colunas = direções, linhas = frames — o mesmo
-layout que o import entende) ou o **frame atual** como PNG.
+até **adotar o tamanho da célula como tamanho do ícone do DMI**. A tolerância da remoção de
+fundo é global, mas cada frame pode ter a **sua** (slider no painel de zoom) — pra folha onde
+uma célula tem fundo mais sujo que as outras. Exportar **GIF animado** da direção atual,
+**spritesheet PNG** do state (colunas = direções, linhas = frames — o mesmo layout que o
+import entende) ou o **frame atual** como PNG — tudo com **escala opcional de 1× a 8×**
+(nearest, pixel perfect).
 
 ## Reduzir sprite de IA
 
@@ -146,7 +155,7 @@ plugin oficial do Aseprite.
 | `lib/dmi.js` | metadata DMI + fatiar/montar a spritesheet |
 | `lib/gif.js` | encoder GIF89a (paleta por frequência, LZW, transparência, loop) |
 | `server.js` | servidor local: lista pastas, abre/grava `.dmi`, import/export, stat |
-| `public/pixels.js` | operações de pixel puras (desenho, região, HSL, transformações, redução dominante, paleta) |
+| `public/pixels.js` | operações de pixel puras (desenho, região, HSL, transformações, redução dominante, paleta, autotile, texturas) |
 | `public/binio.js` | protocolo binário client (frames nunca viram base64/JSON) |
 | `public/app.js` | a interface (sem framework) |
 | `public/smoke.html` | smoke test que dirige a UI real com eventos sintéticos |

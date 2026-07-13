@@ -161,6 +161,61 @@ async function pureChecks() {
   const aH = (x, y) => halo[(y * HW + x) * 4 + 3];
   ok('tolerância alta + flood: halo some, contorno segura, miolo intacto',
      aH(0, 2) === 0 && aH(1, 2) === 0 && aH(2, 2) === 255 && aH(3, 2) === 255);
+
+  // --- autotile ---
+  const AW = 20, AH = 20;
+  const tile = new Uint8ClampedArray(AW * AH * 4);
+  for (let o = 0; o < tile.length; o += 4) { tile[o] = 100; tile[o + 1] = 120; tile[o + 2] = 140; tile[o + 3] = 255; }
+  const atOpts = { intensity: 0.15, outline: 1, corner: 3 };
+  const full = P.autotileVariant(tile, AW, AH, { top: false, bottom: false, left: false, right: false }, atOpts);
+  ok('autotile: junção 15 (cercado por todos os lados) sai intacta', P.framesEqual(full, tile));
+  const iso = P.autotileVariant(tile, AW, AH, { top: true, bottom: true, left: true, right: true }, atOpts);
+  const atPx = (x, y, k = 3) => iso[(y * AW + x) * 4 + k];
+  ok('autotile: cantos expostos arredondam (viram transparentes)',
+     atPx(0, 0) === 0 && atPx(AW - 1, 0) === 0 && atPx(0, AH - 1) === 0 && atPx(AW - 1, AH - 1) === 0);
+  ok('autotile: contorno exposto escurece, faixa de cima clareia, de baixo escurece',
+     atPx(10, 0, 0) < 100 && atPx(10, 1, 0) > 100 && atPx(10, AH - 2, 0) < 100);
+  const half = P.autotileVariant(tile, AW, AH, { top: true, bottom: false, left: false, right: false }, atOpts);
+  ok('autotile: lado com vizinho não ganha contorno', half[(0 * AW + 10) * 4] < 100 && half[((AH - 1) * AW + 10) * 4] === 100);
+
+  // --- fills de textura ---
+  const TXC = [{ r: 10, g: 20, b: 30 }, { r: 200, g: 100, b: 50 }];
+  const isTxColor = (p, o) => TXC.some((c) => p[o] === c.r && p[o + 1] === c.g && p[o + 2] === c.b) && p[o + 3] === 255;
+  const t1 = new Uint8ClampedArray(8 * 8 * 4);
+  const n1 = P.noiseFill(t1, 8, 8, 0, 0, 7, 7, TXC, { seed: 7 });
+  let txOk = n1 === 64;
+  for (let o = 0; o < t1.length; o += 4) txOk = txOk && isTxColor(t1, o);
+  ok('noiseFill: pinta a região inteira, só com as cores da lista', txOk);
+  const t1b = new Uint8ClampedArray(8 * 8 * 4);
+  P.noiseFill(t1b, 8, 8, 0, 0, 7, 7, TXC, { seed: 7 });
+  ok('noiseFill: mesma semente = mesmo padrão (determinístico)', P.framesEqual(t1, t1b));
+  P.noiseFill(t1b, 8, 8, 0, 0, 7, 7, TXC, { seed: 8 });
+  ok('noiseFill: semente diferente = padrão diferente', !P.framesEqual(t1, t1b));
+  const t2 = new Uint8ClampedArray(8 * 8 * 4);
+  t2[(3 * 8 + 3) * 4 + 3] = 255; // um único pixel opaco (preto)
+  const n2 = P.noiseFill(t2, 8, 8, 0, 0, 7, 7, TXC, { seed: 7, onlyOpaque: true });
+  ok('noiseFill onlyOpaque: pinta só onde já havia pixel', n2 === 1 && t2[(0) * 4 + 3] === 0 && isTxColor(t2, (3 * 8 + 3) * 4));
+  const t3 = new Uint8ClampedArray(8 * 8 * 4);
+  P.noiseFill(t3, 8, 8, 2, 2, 5, 5, TXC, { seed: 7 });
+  ok('noiseFill: respeita o retângulo (fora fica intocado)', t3[(0) * 4 + 3] === 0 && t3[((2 * 8) + 2) * 4 + 3] === 255);
+  const t4 = new Uint8ClampedArray(8 * 8 * 4);
+  const n4 = P.voronoiFill(t4, 8, 8, 0, 0, 7, 7, TXC, { cells: 4, seed: 9 });
+  let vorOk = n4 === 64;
+  for (let o = 0; o < t4.length; o += 4) vorOk = vorOk && isTxColor(t4, o);
+  const t4b = new Uint8ClampedArray(8 * 8 * 4);
+  P.voronoiFill(t4b, 8, 8, 0, 0, 7, 7, TXC, { cells: 4, seed: 9 });
+  ok('voronoiFill: região inteira, cores da lista, determinístico', vorOk && P.framesEqual(t4, t4b));
+
+  // --- escala do export (nearest): cada pixel vira um bloco k×k idêntico ---
+  const s1 = new Uint8ClampedArray(2 * 2 * 4);
+  [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]].forEach((c, i) => {
+    s1[i * 4] = c[0]; s1[i * 4 + 1] = c[1]; s1[i * 4 + 2] = c[2]; s1[i * 4 + 3] = 255;
+  });
+  const s2 = P.scaleNearest(s1, 2, 2, 4, 4);
+  const sPx = (x, y, k) => s2[(y * 4 + x) * 4 + k];
+  ok('scaleNearest 2×: blocos 2×2 idênticos, sem cor nova',
+     sPx(0, 0, 0) === 255 && sPx(1, 1, 0) === 255 && sPx(2, 0, 1) === 255 && sPx(3, 1, 1) === 255 &&
+     sPx(0, 2, 2) === 255 && sPx(2, 2, 0) === 255 && sPx(3, 3, 1) === 255 && sPx(3, 3, 0) === 255);
 }
 
 async function run() {
@@ -211,6 +266,11 @@ async function run() {
        c.top >= w.top - 1 && c.left >= w.left - 1);
     ok('zoom alto: o body não rolou (abas e rodapé no lugar)',
        cd.documentElement.scrollTop === 0 && cd.body.scrollTop === 0);
+    // sem min-height:0 no #stage a linha 1fr do grid estica com o canvas e o footer sai da tela
+    const foot = cd.querySelector('footer').getBoundingClientRect();
+    ok('zoom alto: o rodapé continua dentro da janela (o grid não esticou)',
+       foot.height > 0 && foot.bottom <= cw.innerHeight + 1);
+    ok('zoom alto: quem rola é o #canvasWrap', wrap.scrollHeight > wrap.clientHeight && wrap.scrollWidth > wrap.clientWidth);
     // volta pro zoom original PELO LABEL: os cliques clampam em 40, então "20 pra lá,
     // 20 pra cá" não é simétrico perto do teto
     while ($('zoomLabel').textContent !== saved && parseInt($('zoomLabel').textContent) > parseInt(saved)) {
@@ -551,6 +611,126 @@ async function run() {
   await waitFor(() => $('impBgInfo').textContent.includes('escolhido por você'));
   ok('picker define a cor do fundo', $('impBgInfo').textContent.includes('#ff0000'));
   await closeImport('cancel');
+
+  // --- o fundo é removido NA FONTE, antes do downsample ---
+  // Uma célula da borda do sprite onde o fundo é PLURALIDADE mas não maioria (28 de 64 px):
+  // no pipeline antigo (limpar só o resultado) a dominante era o branco do fundo e o flood
+  // final apagava o pixel — buraco na borda; limpando na fonte, os 28 brancos somem antes,
+  // a maioria continua opaca (36/64) e a dominante é a cor do SPRITE (bege 20 > cinza 16).
+  const S = W * 8; // 1 pixel do resultado = bloco 8×8 da fonte
+  const HL = cd.createElement('canvas');
+  HL.width = HL.height = S;
+  const hlx = HL.getContext('2d');
+  hlx.fillStyle = '#ffffff';
+  hlx.fillRect(0, 0, S, S);
+  hlx.fillStyle = '#e6d2b4'; // bege (230,210,180)
+  hlx.fillRect(16, 16, S - 32, S - 32); // miolo: blocos (2,2) em diante
+  // bloco (1,1) = px 8..15: 28 branco + 16 cinza de halo + 20 bege
+  hlx.fillStyle = '#969696'; // cinza (150) — a "mistura" fundo→contorno
+  hlx.fillRect(11, 12, 1, 4);
+  hlx.fillRect(12, 8, 1, 8);
+  hlx.fillRect(13, 8, 1, 4);
+  hlx.fillStyle = '#e6d2b4';
+  hlx.fillRect(13, 12, 1, 4);
+  hlx.fillRect(14, 8, 2, 8);
+  const haloPng = await new Promise((r) => HL.toBlob(r, 'image/png'));
+
+  await dropFile(await haloPng.arrayBuffer(), 'halo.png', 'image/png');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  $('impCols').value = 1;
+  $('impRows').value = 1;
+  $('impCols').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  $('impRows').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impThumbs').children.length === 1 && $('impCellH').value === String(S));
+  cd.querySelector('input[name="ibg"][value="flood"]').click();
+  $('impTol').value = 40; // cinza 150 (dist. 105) fica FORA da tolerância: não é o tol que salva
+  $('impTol').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => /pixels limpos/.test($('impBgInfo').textContent));
+
+  const nStH = $('stateList').children.length;
+  await closeImport('ok');
+  const hBg = cellPx(0, 0, 0), hEdge = cellPx(0, 1, 1), hMid = cellPx(0, 4, 4);
+  ok('fundo na fonte: bloco 100% fundo sai transparente', hBg[3] === 0);
+  ok('fundo na fonte: célula de borda vira a cor do sprite (nem buraco, nem halo)',
+     hEdge[3] === 255 && hEdge[0] === 230 && hEdge[1] === 210 && hEdge[2] === 180);
+  ok('fundo na fonte: miolo intacto', hMid[3] === 255 && hMid[0] === 230);
+  key('z', { ctrlKey: true });
+  await waitFor(() => $('stateList').children.length === nStH);
+
+  // --- tolerância por frame no import ---
+  // célula 0: fundo branco puro; célula 1: fundo #efefef (dist. 16 do branco). A global (12)
+  // limpa só a célula 0; um override de 40 no frame 2 limpa a outra.
+  const TS = cd.createElement('canvas');
+  TS.width = W * 2;
+  TS.height = W;
+  const tsx = TS.getContext('2d');
+  tsx.fillStyle = '#ffffff'; tsx.fillRect(0, 0, W, W);
+  tsx.fillStyle = '#efefef'; tsx.fillRect(W, 0, W, W);
+  tsx.fillStyle = '#ff0000'; tsx.fillRect(8, 8, W - 16, W - 16);
+  tsx.fillStyle = '#0000ff'; tsx.fillRect(W + 8, 8, W - 16, W - 16);
+  const tolPng = await new Promise((r) => TS.toBlob(r, 'image/png'));
+  await dropFile(await tolPng.arrayBuffer(), 'tolframe.png', 'image/png');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  cd.querySelector('input[name="ibg"][value="flood"]').click();
+  await waitFor(() => !$('impTolFRow').hidden);
+  ok('tolerância por frame: slider aparece quando o fundo está ativo', true);
+  const thumbA = (i) => $('impThumbs').children[i].getContext('2d').getImageData(0, 0, 1, 1).data[3];
+  await waitFor(() => thumbA(0) === 0 && thumbA(1) === 255);
+  ok('tolerância global (12) limpa o branco da célula 0 e deixa o #efefef da 1', true);
+  $('impThumbs').children[1].dispatchEvent(new cw.MouseEvent('mouseover', { bubbles: true }));
+  await waitFor(() => $('impZoomLbl').textContent.includes('frame 2'));
+  $('impTolF').value = 40;
+  $('impTolF').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => thumbA(1) === 0);
+  ok('override de 40 só no frame 2 limpa o fundo dele', true);
+  ok('miniatura marcada + contagem no rótulo do fundo',
+     $('impThumbs').children[1].className.includes('tolov')
+     && $('impBgInfo').textContent.includes('1 frame(s) com tolerância própria'));
+  $('btnImpTolFReset').click();
+  await waitFor(() => thumbA(1) === 255);
+  ok('"usar a global" remove o override e o fundo volta', true);
+  $('impTolF').value = 40;
+  $('impTolF').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => thumbA(1) === 0);
+  const nStT = $('stateList').children.length;
+  await closeImport('ok');
+  const tf0 = cellPx(0, 0, 0), tf1 = cellPx(1, 0, 0), tf1c = cellPx(1, W >> 1, W >> 1);
+  ok('import final respeita o por-frame: fundo dos dois transparente, miolo azul intacto',
+     tf0[3] === 0 && tf1[3] === 0 && tf1c[2] > 200 && tf1c[3] === 255);
+  key('z', { ctrlKey: true });
+  await waitFor(() => $('stateList').children.length === nStT);
+
+  // --- autotile: 16 states nomeados pela junção ---
+  const nStA = $('stateList').children.length;
+  $('btnAutotile').click();
+  await waitFor(() => $('dlgAutotile').open);
+  ok('autotile: diálogo abre com o preview 4×4', $('atPreview').width === 4 * W + 6);
+  $('atPrefix').value = 'at-';
+  await closeDialog('dlgAutotile', 'ok');
+  ok('autotile: 16 states criados', $('stateList').children.length === nStA + 16);
+  ok('autotile: nomes = prefixo + número da junção',
+     $('stateList').textContent.includes('at-0') && $('stateList').textContent.includes('at-15'));
+  key('z', { ctrlKey: true });
+  await waitFor(() => $('stateList').children.length === nStA);
+  ok('autotile: Ctrl+Z desfaz os 16 de uma vez', true);
+
+  // --- textura: preenche o frame atual ---
+  cd.querySelector('#grid canvas[data-f="0"][data-d="0"]').click(); // garante frame (0,0) selecionado
+  await sleep(30);
+  $('btnTexture').click();
+  await waitFor(() => $('dlgTexture').open);
+  ok('textura: 4 cores derivadas da cor atual', $('txColors').children.length === 4);
+  $('txOpaque').checked = false; // preencher tudo, pra dar pra assertar o alfa
+  await closeDialog('dlgTexture', 'ok');
+  ok('textura: aplicou', toastText().includes('Textura aplicada'));
+  const txPix = cellPx(0, 1, 1);
+  ok('textura: frame inteiro ficou opaco', txPix[3] === 255);
+  key('z', { ctrlKey: true });
+  await sleep(60);
+
+  ok('export: seletor de escala presente (1–8×)', $('expScale') && $('expScale').options.length === 4);
 
   // --- DMI sem states: não pode quebrar, e a grade fica livre ---
   $('btnNew').click();
