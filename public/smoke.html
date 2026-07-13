@@ -8,46 +8,174 @@
 <body>
 <h3 id="verdict">rodando...</h3>
 <pre id="out"></pre>
-<iframe id="app" src="/#Test%2Fbase.dmi" width="1400" height="900"></iframe>
+<iframe id="app" src="/#Test%2Ficons%2Fbase.dmi" width="1400" height="900"></iframe>
 <script>
 // Smoke test: dirige o editor real dentro do iframe com eventos sinteticos
 // e verifica efeitos observaveis (status bar, toast, abas, grid).
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = [];
 let failed = false;
+// renderiza a cada check: se o teste TRAVAR num await, o dump ainda mostra onde parou
+const render = () => {
+  document.getElementById('out').innerHTML = log
+    .map((l) => `<span class="${l.slice(0, 4)}">${l}</span>`)
+    .join('\n');
+};
 const ok = (name, cond) => {
   log.push(`${cond ? 'PASS' : 'FAIL'} ${name}`);
   if (!cond) failed = true;
+  render();
 };
 
+// Conta tentativas em vez de olhar o relogio: headless com --virtual-time-budget adianta
+// o Date.now() de uma vez so' e o timeout estouraria antes da condicao virar.
 async function waitFor(fn, ms = 6000) {
-  const t0 = Date.now();
-  for (;;) {
+  for (let i = 0; i <= ms / 60; i++) {
     try {
       const v = fn();
       if (v) return v;
     } catch {}
-    if (Date.now() - t0 > ms) throw new Error('timeout esperando condição');
     await sleep(60);
   }
+  throw new Error('timeout esperando condição');
 }
 
 const frame = document.getElementById('app');
-frame.addEventListener('load', () => run().catch((e) => finish('EXCEÇÃO: ' + e.message)));
+// o stack diz QUAL waitFor estourou — sem isso um timeout vira agulha no palheiro
+frame.addEventListener('load', () => run().catch((e) => finish('EXCEÇÃO: ' + e.message + ' — ' + (e.stack || '').split('\n').slice(1, 4).join(' | '))));
 
 function finish(extra) {
   if (extra) { log.push('FAIL ' + extra); failed = true; }
   document.title = 'SMOKE:' + (failed ? 'FAIL' : 'PASS');
   document.getElementById('verdict').textContent = document.title;
-  document.getElementById('out').innerHTML = log
-    .map((l) => `<span class="${l.slice(0, 4)}">${l}</span>`)
-    .join('\n');
+  render();
+}
+
+// O import de JPEG/WEBP/BMP/GIF depende do ImageDecoder devolver RGBA NAO premultiplicado.
+// Isso e' um contrato do browser, entao a gente PROVA em vez de acreditar: um PNG com
+// alfa=128 e r=255 (gerado pelo NOSSO encoder, que grava alfa reto) tem que voltar do
+// ImageDecoder com r=255. Se voltar 128, o copyTo premultiplicou e o import inteiro cai.
+async function decoderChecks() {
+  const { encodeEnvelope } = await import('./binio.js');
+  ok('ImageDecoder disponível', 'ImageDecoder' in window);
+  if (!('ImageDecoder' in window)) return;
+
+  const px = new Uint8ClampedArray([255, 0, 0, 128, 0, 255, 0, 255]); // 2x1
+  const blob = encodeEnvelope({ width: 2, height: 1, count: 1, cols: 1 }, [px]);
+  const png = await (await fetch('/api/export/png', { method: 'POST', body: blob })).blob();
+
+  const dec = new ImageDecoder({ data: new Uint8Array(await png.arrayBuffer()), type: 'image/png' });
+  await dec.tracks.ready;
+  await dec.completed;
+  const { image } = await dec.decode({ frameIndex: 0 });
+  const rect = image.visibleRect;
+  const out = new Uint8ClampedArray(image.allocationSize({ format: 'RGBA', rect, layout: [{ offset: 0, stride: rect.width * 4 }] }));
+  await image.copyTo(out, { format: 'RGBA', rect, layout: [{ offset: 0, stride: rect.width * 4 }] });
+  image.close();
+  dec.close();
+
+  ok(`ImageDecoder devolve RGBA não premultiplicado (r=${out[0]}, a=${out[3]})`, out[0] === 255 && out[3] === 128);
+}
+
+// Checks puros de pixels.js (sem UI) — reducao dominante e remocao de fundo.
+async function pureChecks() {
+  const P = await import('./pixels.js');
+  const cell = (fn) => {
+    const a = new Uint8ClampedArray(4 * 4 * 4);
+    for (let i = 0; i < 16; i++) fn(a, i * 4, i);
+    return a;
+  };
+
+  // 12 de 16 pixels verdes, 4 vermelhos -> vence o verde (nao a media dos dois)
+  const dom = P.downsampleDominant(
+    cell((a, o, i) => { a[o] = i < 12 ? 0 : 255; a[o + 1] = i < 12 ? 200 : 0; a[o + 3] = 255; }),
+    4, 4, 1, 1
+  );
+  ok('downsample pega a cor dominante da célula', dom[0] === 0 && dom[1] === 200 && dom[3] === 255);
+
+  // 4 de 16 opacos (75% transparente) -> celula inteira transparente
+  const tr = P.downsampleDominant(
+    cell((a, o, i) => { if (i < 4) { a[o] = 255; a[o + 3] = 255; } }),
+    4, 4, 1, 1
+  );
+  ok('célula majoritariamente transparente vira transparente', tr[3] === 0);
+
+  // ruido +-1 num mesmo bin -> mediana do bin (cor real, nao inventada)
+  const noisy = P.downsampleDominant(
+    cell((a, o, i) => { a[o] = 100 + ((i % 3) - 1); a[o + 1] = 100; a[o + 2] = 100; a[o + 3] = 255; }),
+    4, 4, 1, 1
+  );
+  ok('ruído ±1 colapsa numa cor do próprio conjunto', noisy[0] === 100 && noisy[1] === 100 && noisy[3] === 255);
+
+  // upscale nearest 2x e volta: tem que devolver o original byte a byte
+  const base = new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255, 255, 255, 0, 255]);
+  const back = P.downsampleDominant(P.scaleNearest(base, 2, 2, 4, 4), 4, 4, 2, 2);
+  ok('2x nearest -> downsample devolve o original', back.every((v, i) => v === base[i]));
+
+  // paleta: 4 tons quase iguais de vermelho colapsam num so'
+  const tones = new Uint8ClampedArray(4 * 4);
+  [200, 203, 206, 40].forEach((r, i) => { tones[i * 4] = r; tones[i * 4 + 3] = 255; });
+  const pal = P.buildPalette([tones], 2);
+  P.applyPalette(tones, pal);
+  ok('paleta de 2 cores junta os tons próximos', pal.length === 2 && tones[0] === tones[4] && tones[0] === tones[8] && tones[12] === 40);
+
+  // fundo branco 5x5 com miolo vermelho e um pixel branco dentro (o "olho")
+  const W = 5, H = 5;
+  const white = { r: 255, g: 255, b: 255 };
+  const eye = (2 * W + 2) * 4;
+  const mk = () => {
+    const a = new Uint8ClampedArray(W * H * 4).fill(255);
+    for (let y = 1; y < 4; y++) {
+      for (let x = 1; x < 4; x++) {
+        const o = (y * W + x) * 4;
+        a[o + 1] = a[o + 2] = 0; // vermelho
+      }
+    }
+    a[eye + 1] = a[eye + 2] = 255; // olho branco no centro
+    return a;
+  };
+  ok('cor da borda detectada', JSON.stringify(P.boundaryColor(mk(), W, H)) === JSON.stringify(white));
+
+  const exact = mk();
+  const nExact = P.clearColorExact(exact, white);
+  ok('remover a cor inteira limpa a borda e o olho branco', nExact === 17 && exact[eye + 3] === 0);
+
+  const flood = mk();
+  const nFlood = P.clearColorFlood(flood, W, H, white);
+  ok('remover só o que encosta na borda preserva o olho', nFlood === 16 && flood[eye + 3] === 255);
+
+  // O halo de anti-aliasing (fundo branco → contorno preto = cinzas médios, ~130 de distância)
+  // precisa de tolerância ALTA pra sair — e o flood tem que parar no contorno, não atravessá-lo.
+  // 7×5, com o miolo bege CERCADO (numa faixa de altura 1 todo pixel é borda e o flood o
+  // alcançaria direto): linhas de cima/baixo pretas; no meio, branco | halo | contorno | bege.
+  const HW = 7, HH = 5;
+  const halo = new Uint8ClampedArray(HW * HH * 4);
+  const putH = (x, y, v) => { const o = (y * HW + x) * 4; halo[o] = v[0]; halo[o + 1] = v[1]; halo[o + 2] = v[2]; halo[o + 3] = 255; };
+  const ROW = [[255, 255, 255], [150, 150, 150], [0, 0, 0], [230, 210, 180], [0, 0, 0], [150, 150, 150], [255, 255, 255]];
+  for (let x = 0; x < HW; x++) {
+    putH(x, 0, [0, 0, 0]);
+    putH(x, HH - 1, [0, 0, 0]);
+    for (let y = 1; y < HH - 1; y++) putH(x, y, ROW[x]);
+  }
+  P.clearColorFlood(halo, HW, HH, white, 160);
+  const aH = (x, y) => halo[(y * HW + x) * 4 + 3];
+  ok('tolerância alta + flood: halo some, contorno segura, miolo intacto',
+     aH(0, 2) === 0 && aH(1, 2) === 0 && aH(2, 2) === 255 && aH(3, 2) === 255);
 }
 
 async function run() {
   const cw = frame.contentWindow;
   const cd = cw.document;
   const $ = (id) => cd.getElementById(id);
+
+  // Rede de segurança: vários caminhos do app engolem a exceção num toast (openDmi, por
+  // exemplo), então um teste que só checa "abriu" não veria o erro. Qualquer exceção não
+  // tratada dentro do app reprova o smoke.
+  cw.addEventListener('error', (ev) => ok('EXCEÇÃO não tratada no app: ' + ev.message, false));
+  cw.addEventListener('unhandledrejection', (ev) => ok('promise rejeitada no app: ' + (ev.reason?.message ?? ev.reason), false));
+
+  await decoderChecks();
+  await pureChecks();
 
   await waitFor(() => !$('editor').hidden);
   ok('arquivo abriu (canvas visível)', true);
@@ -67,6 +195,30 @@ async function run() {
   const key = (k, extra = {}) =>
     cd.body.dispatchEvent(new cw.KeyboardEvent('keydown', { bubbles: true, key: k, ...extra }));
   const toastText = () => ($('toast').hidden ? '' : $('toast').textContent);
+
+  // --- zoom alto: o canvas maior que a área NÃO pode transbordar pra onde o scroll não
+  // alcança (era o place-items:center: metade de cima/esquerda ficava inalcançável e o
+  // navegador rolava o body inteiro pra "mostrar" o canvas, engolindo abas e rodapé) ---
+  {
+    const saved = $('zoomLabel').textContent;
+    for (let i = 0; i < 20; i++) $('btnZoomIn').click(); // 32px × +20 níveis: estoura a área nos 2 eixos
+    await sleep(60);
+    const wrap = $('canvasWrap');
+    wrap.scrollLeft = 0;
+    wrap.scrollTop = 0;
+    const c = canvas.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+    ok('zoom alto: o topo/esquerda do canvas é alcançável pelo scroll',
+       c.top >= w.top - 1 && c.left >= w.left - 1);
+    ok('zoom alto: o body não rolou (abas e rodapé no lugar)',
+       cd.documentElement.scrollTop === 0 && cd.body.scrollTop === 0);
+    // volta pro zoom original PELO LABEL: os cliques clampam em 40, então "20 pra lá,
+    // 20 pra cá" não é simétrico perto do teto
+    while ($('zoomLabel').textContent !== saved && parseInt($('zoomLabel').textContent) > parseInt(saved)) {
+      $('btnZoomOut').click();
+    }
+    await sleep(60);
+    ok('zoom restaurado', $('zoomLabel').textContent === saved);
+  }
 
   // --- lapis: pinta (2,2) de branco e confere no canvas ---
   pev('pointerdown', 2, 2);
@@ -161,7 +313,7 @@ async function run() {
   ok('undo do colar state', $('stateList').children.length === 2);
 
   // --- segunda aba ---
-  const li = [...$('fileList').children].find((l) => l.dataset.path === 'Test/map.dmi');
+  const li = [...$('fileList').children].find((l) => l.dataset.path === 'Test/icons/map.dmi');
   li.click();
   await waitFor(() => $('tabbar').children.length === 2);
   ok('segunda aba abriu', true);
@@ -201,6 +353,332 @@ async function run() {
   cd.querySelector('#grid canvas[data-f="0"][data-d="0"]').click();
   await sleep(30);
   ok('clique simples limpa multi-seleção', $('stSel').textContent === '');
+
+  // helpers de import: injeta um arquivo no #fileInput como se o usuário tivesse escolhido
+  const settled = () => waitFor(() => !$('impPrevLbl').textContent.includes('processando'));
+  const impBg = () => cd.querySelector('input[name="ibg"]:checked').value;
+  // O evento 'close' do <dialog> é assíncrono e, sob --virtual-time-budget, pode demorar
+  // mais que um waitFor por tentativas. Esperar o próprio evento em vez de pollar.
+  // Os diálogos de Novo/Redimensionar/Importar aplicam o efeito no CLIQUE do OK (síncrono),
+  // não no evento 'close' — que é assíncrono e, sob --virtual-time-budget, chega tarde ou não
+  // chega. Então basta clicar e esperar o diálogo fechar.
+  async function closeDialog(id, value) {
+    const dlg = $(id);
+    dlg.querySelector(`button[value="${value}"]`).click();
+    await waitFor(() => !dlg.open);
+    await sleep(30);
+  }
+  const closeImport = (value) => closeDialog('dlgImport', value);
+  async function dropFile(bytes, name, type) {
+    const dt = new cw.DataTransfer();
+    dt.items.add(new cw.File([bytes], name, { type }));
+    const finp = $('fileInput');
+    finp.files = dt.files;
+    finp.dispatchEvent(new cw.Event('change', { bubbles: true }));
+  }
+
+  // --- import de PNG: modo "reduzir" + remoção de fundo ---
+  const src = cd.createElement('canvas');
+  src.width = src.height = 128;
+  const sctx = src.getContext('2d');
+  sctx.fillStyle = '#ffffff';
+  sctx.fillRect(0, 0, 128, 128);
+  sctx.fillStyle = '#ff0000';
+  sctx.fillRect(32, 32, 64, 64);
+  const png = await new Promise((r) => src.toBlob(r, 'image/png'));
+
+  await dropFile(await png.arrayBuffer(), 'smoke_import.png', 'image/png');
+  await waitFor(() => $('dlgImport').open);
+  ok('diálogo de import abriu', true);
+  // 128×128 num DMI 32×32 é múltiplo: a grade default vem 4×4. Aqui quero o sprite inteiro
+  // num frame só, então digito 1×1 — é o caso do sprite de IA em alta resolução.
+  ok('grade default é a real (4×4)', $('impCols').value === '4' && $('impRows').value === '4');
+  ok('16 miniaturas, uma por célula', $('impThumbs').children.length === 16);
+  cd.querySelector('input[name="imode"][value="reduce"]').click();
+  $('impCols').value = 1;
+  $('impRows').value = 1;
+  // os dois disparam: colunas e linhas recalculam a célula (largura e altura) separadamente
+  $('impCols').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  $('impRows').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impThumbs').children.length === 1 && $('impCellH').value === '128');
+  ok('digitar 1×1 reduz a imagem inteira a um frame', true);
+  ok('fonte desenhada no painel esquerdo', $('impSrc').width === 128 && $('impSrcOv').width > 0);
+  cd.querySelector('input[name="ibg"][value="flood"]').click();
+  await settled();
+  ok('fundo branco detectado no import', $('impBgInfo').textContent.includes('#ffffff'));
+  ok('cor do fundo veio da detecção', $('impBgInfo').textContent.includes('detectado na borda'));
+  ok('picker de fundo e tolerância aparecem', !$('impBgRow').hidden);
+  // quantizar em 2 cores + remover o fundo branco deixa só o vermelho => <= 2 cores
+  $('impColors').value = 2;
+  $('impColors').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => {
+    const m = /(\d+) cores/.exec($('impPrevLbl').textContent);
+    return m && +m[1] <= 2;
+  });
+  ok('quantização reflete no preview', true);
+
+  const nStates = $('stateList').children.length;
+  await closeImport('ok');
+  ok('import criou um state novo', $('stateList').children.length === nStates + 1 && toastText().includes('reduzido'));
+  key('z', { ctrlKey: true });
+  await sleep(60);
+  ok('undo desfaz o import inteiro', $('stateList').children.length === nStates);
+
+  // --- import de GIF ANIMADO (round-trip pelo nosso próprio /api/export/gif) ---
+  // 3 quadros DISJUNTOS: se o ImageDecoder acumulasse em vez de aplicar o disposal=2 que o
+  // nosso encoder grava, o vermelho do frame 0 sobreviveria no frame 1 e este teste quebra.
+  const { encodeEnvelope } = await import('./binio.js');
+  const W = +$('grid').querySelector('canvas').width; // = doc.width, sem hardcode
+  const mkFrame = (x, y, [r, g, b]) => {
+    const f = new Uint8ClampedArray(W * W * 4);
+    for (let yy = y; yy < y + 4; yy++) {
+      for (let xx = x; xx < x + 4; xx++) {
+        const o = (yy * W + xx) * 4;
+        f[o] = r; f[o + 1] = g; f[o + 2] = b; f[o + 3] = 255;
+      }
+    }
+    return f;
+  };
+  const gFrames = [mkFrame(1, 1, [255, 0, 0]), mkFrame(W - 6, W - 6, [0, 255, 0]), mkFrame(10, 10, [0, 0, 255])];
+  const gifBlob = await (await fetch('/api/export/gif', {
+    method: 'POST',
+    body: encodeEnvelope({ width: W, height: W, delays: [10, 20, 30], loop: 0, count: 3 }, gFrames),
+  })).blob();
+
+  await dropFile(await gifBlob.arrayBuffer(), 'smoke_anim.gif', 'image/gif');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  ok('GIF animado: 3 quadros detectados', $('impInfo').textContent.includes('3 quadros'));
+  ok('GIF animado: direções escondidas (não vira 4 dirs)', $('impDirsWrap').hidden);
+  ok('GIF animado: colunas/linhas travadas', $('impCols').disabled && $('impRows').disabled);
+  ok('GIF animado: uma miniatura por quadro', $('impThumbs').children.length === 3);
+  cd.querySelector('input[name="imode"][value="crop"]').click(); // 1:1, dá pra assertar bytes
+  await settled();
+
+  const nSt2 = $('stateList').children.length;
+  await closeImport('ok');
+  ok('GIF animado virou um state', $('stateList').children.length === nSt2 + 1 && toastText().includes('3 frame(s)'));
+  ok('state animado tem 3 frames, 1 direção', $('pFrames').value === '3' && $('pDirs').value === '1');
+  ok('loop infinito preservado', $('pLoop').value === '0');
+  ok('delay do frame 0 = 1 (10cs)', $('pDelay').value === '1');
+
+  const cellPx = (f, x, y) => {
+    const c = cd.querySelector(`#grid canvas[data-f="${f}"][data-d="0"]`);
+    return c.getContext('2d').getImageData(x, y, 1, 1).data;
+  };
+  const f0red = cellPx(0, 2, 2);
+  const f1green = cellPx(1, W - 4, W - 4);
+  const f1atRed = cellPx(1, 2, 2);
+  ok('frame 0 tem o vermelho', f0red[0] > 200 && f0red[3] === 255);
+  ok('frame 1 tem o verde', f1green[1] > 200 && f1green[3] === 255);
+  ok('frame 1 NÃO tem o vermelho do frame 0 (disposal aplicado)', f1atRed[3] === 0);
+
+  key('z', { ctrlKey: true });
+  await waitFor(() => $('stateList').children.length === nSt2);
+
+  // --- import de JPEG (sem alfa: fundo 'flood' pré-selecionado) ---
+  const jpg = await new Promise((r) => src.toBlob(r, 'image/jpeg', 0.92));
+  await dropFile(await jpg.arrayBuffer(), 'smoke.jpg', 'image/jpeg');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  ok('JPEG importa (diálogo abriu com as dimensões)', $('impInfo').textContent.includes('128×128'));
+  ok('JPEG sem alfa: remoção de fundo já vem marcada', impBg() === 'flood');
+  // JPEG é lossy: a borda sai #fefefe, então não exigimos #ffffff exato
+  ok('fundo do JPEG detectado e limpo', /— [1-9]\d* pixels limpos/.test($('impBgInfo').textContent));
+  await closeImport('cancel');
+
+  // --- fallback por canvas: mesmo JPEG, com o ImageDecoder removido ---
+  const RealDecoder = cw.ImageDecoder;
+  delete cw.ImageDecoder;
+  await dropFile(await jpg.arrayBuffer(), 'smoke_fallback.jpg', 'image/jpeg');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  ok('sem WebCodecs: cai no fallback e avisa', $('impInfo').textContent.includes('canvas'));
+  ok('fallback ainda produz preview', $('impThumbs').children.length > 0);
+  await closeImport('cancel');
+  cw.ImageDecoder = RealDecoder;
+
+  // --- formato não suportado não pode mais ser descartado em silêncio ---
+  await dropFile(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), 'lixo.tga', '');
+  await waitFor(() => toastText().includes('Formato não suportado'));
+  ok('formato não suportado dá toast (não some calado)', true);
+
+  // --- spritesheet: grade detectada, corte exato e exclusão de célula ---
+  // 4 células W×W de cores distintas => a grade default tem que ser 4×1 e o modo, "fatiar"
+  const SH = cd.createElement('canvas');
+  SH.width = W * 4;
+  SH.height = W;
+  const shx = SH.getContext('2d');
+  ['#ff0000', '#00ff00', '#0000ff', '#ffff00'].forEach((col, i) => {
+    shx.fillStyle = col;
+    shx.fillRect(i * W, 0, W, W);
+  });
+  const sheetPng = await new Promise((r) => SH.toBlob(r, 'image/png'));
+
+  await dropFile(await sheetPng.arrayBuffer(), 'folha.png', 'image/png');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  ok('grade real detectada (4×1, não 1×1)', $('impCols').value === '4' && $('impRows').value === '1');
+  ok('corte exato pré-selecionado', cd.querySelector('input[name="imode"]:checked').value === 'slice');
+  ok('4 miniaturas, uma por célula', $('impThumbs').children.length === 4);
+  ok('rótulo mostra as 4 células', $('impPrevLbl').textContent.includes('4 de 4'));
+
+  // exclui a 2ª célula (a verde) clicando na miniatura
+  $('impThumbs').children[1].click();
+  await waitFor(() => $('impPrevLbl').textContent.includes('3 de 4')).catch(() => {
+    throw new Error(`DIAG lbl="${$('impPrevLbl').textContent}" cls="${$('impThumbs').children[1].className}" `
+      + `cols=${$('impCols').value} cw=${$('impCellW').value} ch=${$('impCellH').value} thumbs=${$('impThumbs').children.length}`);
+  });
+  ok('clique na miniatura exclui a célula', $('impThumbs').children[1].className.includes('off'));
+
+  const nSt3 = $('stateList').children.length;
+  await closeImport('ok');
+  ok('só as células escolhidas entraram', $('pFrames').value === '3');
+  const c0 = cellPx(0, 2, 2), c1 = cellPx(1, 2, 2);
+  ok('a célula excluída (verde) não entrou: 0=vermelho, 1=azul',
+     c0[0] > 200 && c0[1] < 60 && c1[2] > 200 && c1[1] < 60);
+  key('z', { ctrlKey: true });
+  await waitFor(() => $('stateList').children.length === nSt3);
+
+  // --- cor de fundo escolhida à mão ---
+  await dropFile(await sheetPng.arrayBuffer(), 'folha2.png', 'image/png');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  cd.querySelector('input[name="ibg"][value="exact"]').click();
+  await settled();
+  $('impBgColor').value = '#ff0000'; // remove o vermelho, não o que foi detectado na borda
+  $('impBgColor').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impBgInfo').textContent.includes('escolhido por você'));
+  ok('picker define a cor do fundo', $('impBgInfo').textContent.includes('#ff0000'));
+  await closeImport('cancel');
+
+  // --- DMI sem states: não pode quebrar, e a grade fica livre ---
+  $('btnNew').click();
+  await waitFor(() => $('dlgNew').open);
+  $('nW').value = 32;
+  $('nH').value = 32;
+  await closeDialog('dlgNew', 'ok');
+  await waitFor(() => $('stateList').children.length === 1);
+  $('btnStateDel').click();
+  await waitFor(() => $('stateList').children.length === 0);
+  ok('dá pra apagar o último state', !toastText().includes('precisa de pelo menos'));
+  ok('DMI sem states não quebra (aviso no lugar do canvas)', !$('noStates').hidden && $('editor').hidden);
+  ok('status bar mostra o icon size', $('stSize').textContent.includes('sem states'));
+
+  // com 0 states o icon size troca livremente (não há frame pra converter)
+  $('btnResize').click();
+  await waitFor(() => $('dlgResize').open);
+  $('rW').value = 48;
+  $('rH').value = 24;
+  await closeDialog('dlgResize', 'ok');
+  await waitFor(() => $('stSize').textContent.includes('48×24'));
+  ok('grade livre num DMI vazio (48×24)', true);
+
+  // e o import consegue adotar o tamanho da célula como icon size
+  await dropFile(await sheetPng.arrayBuffer(), 'folha3.png', 'image/png');
+  await waitFor(() => $('dlgImport').open).catch(() => {
+    throw new Error(`DIAG import não abriu: toast="${toastText()}" open=${$('dlgImport').open} files=${$('fileInput').files.length}`);
+  });
+  await settled();
+  $('impCols').value = 4;
+  $('impRows').value = 1;
+  $('impCols').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  $('impRows').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impCellLbl').textContent === `${W}×${W}`);
+  ok('tamanho da célula calculado', !$('impSetSize').disabled);
+  $('impSetSize').checked = true;
+  $('impSetSize').dispatchEvent(new cw.Event('change', { bubbles: true }));
+  await settled();
+  ok('sem states: não pergunta como converter os frames antigos', $('impFitWrap').hidden);
+  await closeImport('ok');
+  ok('icon size virou o da célula', $('stSize').textContent.startsWith(`${W}×${W}`));
+  ok('e o state entrou', $('stateList').children.length === 1 && $('pFrames').value === '4');
+
+  // --- grade explícita: célula digitável, colunas vinculadas e OFFSET ---
+  await dropFile(await sheetPng.arrayBuffer(), 'folha4.png', 'image/png');
+  await waitFor(() => $('dlgImport').open);
+  await settled();
+  ok('a célula default é o icon size', $('impCellW').value === `${W}` && $('impCellH').value === `${W}`);
+
+  // vínculo: a célula manda nas colunas, e as colunas mandam na célula
+  $('impCellW').value = 16;
+  $('impCellW').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impCols').value === '8');
+  ok('digitar a célula recalcula as colunas (128/16 = 8)', true);
+  $('impCols').value = 4;
+  $('impCols').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impCellW').value === `${W}`);
+  ok('digitar as colunas recalcula a célula (128/4 = 32)', true);
+
+  // offset de meia célula: a grade desliza e o frame 0 fica meio vermelho, meio verde
+  $('impOffX').value = W / 2;
+  $('impOffX').dispatchEvent(new cw.Event('input', { bubbles: true }));
+  await waitFor(() => $('impSrcLbl').textContent.includes(`(${W / 2},0)`));
+  await settled();
+  ok('offset entra na grade (rótulo da fonte)', true);
+
+  // zoom: o mouse na miniatura joga o frame grande no painel
+  $('impThumbs').children[1].dispatchEvent(new cw.MouseEvent('mouseover', { bubbles: true }));
+  await waitFor(() => $('impZoomLbl').textContent.includes('frame 2'));
+  ok('zoom mostra o frame apontado, no tamanho final', $('impZoomOut').width === W);
+
+  // O canvas tem a largura NATIVA como min-content: sem min-width:0 nas colunas ele estoura a
+  // trilha do grid e vaza o diálogo pra fora da tela (aconteceu). Os canvases têm que caber.
+  const inBox = (cv) => {
+    const c = cv.getBoundingClientRect(), b = cv.parentElement.getBoundingClientRect();
+    return c.width <= b.width + 1 && c.height <= b.height + 1;
+  };
+  ok('o zoom cabe nas caixas dele', inBox($('impZoomOut')) && inBox($('impZoomSrc')));
+  ok('nada vaza pra fora do diálogo', $('dlgImport').scrollWidth <= $('dlgImport').clientWidth + 1);
+
+  // Alt+clique no zoom pega a cor do fundo do pixel exato (do frame JÁ convertido)
+  const zr = $('impZoomOut').getBoundingClientRect();
+  $('impZoomOut').dispatchEvent(new cw.MouseEvent('click', {
+    bubbles: true, altKey: true,
+    clientX: zr.left + zr.width / 2, clientY: zr.top + zr.height / 2,
+  }));
+  await waitFor(() => $('impBgInfo').textContent.includes('escolhido por você'));
+  ok('Alt+clique no zoom escolhe a cor do fundo', true);
+
+  // volta o fundo pra "manter": os bytes precisam entrar intactos pro teste do offset
+  cd.querySelector('input[name="ibg"][value="none"]').click();
+  await settled();
+
+  // corte exato continua valendo com a grade deslocada (a célula é 32×32, e é só isso que importa)
+  cd.querySelector('input[name="imode"][value="slice"]').click();
+  await settled();
+  ok('fatiar disponível com offset (a célula bate com o alvo)',
+     cd.querySelector('input[name="imode"]:checked').value === 'slice');
+
+  const nSt4 = $('stateList').children.length;
+  await closeImport('ok');
+  ok('import com offset criou o state', $('stateList').children.length === nSt4 + 1);
+  const oL = cellPx(0, 2, 2), oR = cellPx(0, W - 2, 2), oOut = cellPx(3, W - 2, 2);
+  ok('offset deslocou o corte: frame 0 é meio vermelho, meio verde',
+     oL[0] > 200 && oL[1] < 60 && oR[1] > 200 && oR[0] < 60);
+  ok('célula que passa da borda vira transparente (copyRegion não clampa)', oOut[3] === 0);
+
+  // --- lixeira: diminuir Frames não destrói os frames ---
+  const px2 = cellPx(2, 2, 2), px3 = cellPx(3, 2, 2); // azul e amarelo (deslocados)
+  $('pFrames').value = 2;
+  $('pFrames').dispatchEvent(new cw.Event('change', { bubbles: true }));
+  await waitFor(() => $('pFrames').value === '2');
+  ok('avisa que os frames foram guardados', $('pFramesTrim').textContent.includes('2 frame(s) guardado(s)'));
+  $('pFrames').value = 4;
+  $('pFrames').dispatchEvent(new cw.Event('change', { bubbles: true }));
+  await waitFor(() => cd.querySelectorAll('#grid canvas[data-d="0"]').length === 4);
+  const back2 = cellPx(2, 2, 2), back3 = cellPx(3, 2, 2);
+  ok('voltar o número devolve os frames com os pixels (não em branco)',
+     [0, 1, 2, 3].every((i) => back2[i] === px2[i] && back3[i] === px3[i]));
+  ok('o aviso some quando não há mais nada guardado', $('pFramesTrim').textContent === '');
+
+  // excluir um frame do meio invalida a lixeira (os índices deslocam)
+  $('btnFrameDel').click();
+  await waitFor(() => $('pFrames').value === '3');
+  $('pFrames').value = 4;
+  $('pFrames').dispatchEvent(new cw.Event('change', { bubbles: true }));
+  await waitFor(() => cd.querySelectorAll('#grid canvas[data-d="0"]').length === 4);
+  ok('excluir frame descarta a lixeira: o frame novo vem em branco', cellPx(3, 2, 2)[3] === 0);
 
   // --- lightbox de export de folha ---
   $('btnExpSheet').click();

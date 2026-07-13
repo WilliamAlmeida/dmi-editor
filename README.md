@@ -7,8 +7,9 @@ Editor de sprites `.dmi` (BYOND) que roda local no navegador. Feito porque o edi
 
 - **Zero dependências** — nada de `npm install`. PNG e GIF são codificados na mão sobre o
   `zlib` nativo do Node, então sobe instantâneo.
-- **Sem perda** — os pixels nunca passam por `canvas` no caminho de leitura/gravação;
-  o round-trip (abrir → salvar) devolve o arquivo byte a byte idêntico.
+- **Sem perda** — os pixels do DMI nunca passam por `canvas`; o round-trip (abrir → salvar)
+  devolve o arquivo byte a byte idêntico. (JPEG/WEBP/BMP/GIF no import são decodificados
+  pelo `ImageDecoder` do navegador, que também devolve RGBA cru, sem canvas.)
 - Os arquivos gerados compilam no Dream Maker sem erros nem warnings.
 
 ## Rodar
@@ -36,7 +37,10 @@ tudo; `Del` limpa; espelhar horizontal/vertical respeita a seleção.
 **scrub** de timeline; **onion skin** (frame anterior/seguinte como fantasma);
 `Shift`+setas deslocam o frame inteiro com wrap; grade frames×direções clicável.
 
-**States** — criar, duplicar, excluir, reordenar (setas ou **arrastar e soltar**);
+**States** — criar, duplicar, excluir (**dá pra apagar todos**: um DMI sem state é válido, e é
+com ele vazio que o tamanho do ícone troca livremente), reordenar (setas ou **arrastar e
+soltar**); diminuir *Frames*/*Direções* **não destrói pixel** — o que sai fica guardado e volta
+se o número voltar (o descarte só é definitivo ao salvar);
 **busca por nome** (essencial em DMIs grandes); copiar/colar **state entre arquivos**
 (redimensiona se o icon size for outro); detector de **duplicatas** (states idênticos e
 frames repetidos dentro de um state); **gerar direções** (ex.: W = E espelhado) em um clique.
@@ -51,11 +55,47 @@ sobrescrever; **detecção de mudança externa** (se o Dream Maker regravar o ar
 recarrega — ou avisa, se você tiver edição pendente); **Redimensionar DMI** inteiro
 (escalar nearest, ou cortar/expandir com âncora).
 
-**Importar/Exportar** — arraste um **PNG** pra dentro (ou botão Importar): vira um state
-novo, fatiando a grade automaticamente se o tamanho for múltiplo do icon size;
-exportar **GIF animado** da direção atual, **spritesheet PNG** do state
-(colunas = direções, linhas = frames — o mesmo layout que o import entende) ou o
-**frame atual** como PNG.
+**Importar/Exportar** — arraste uma imagem pra dentro (ou botão Importar): **PNG, JPEG,
+WEBP, BMP ou GIF** viram um state novo, e **GIF/WEBP animado vira um state animado** (cada
+quadro é um frame, com os delays e o loop preservados). O diálogo ocupa a tela e mostra a
+**imagem original com a grade desenhada por cima**, ao vivo: você digita colunas/linhas **ou o
+tamanho da célula** (um recalcula o outro), ajusta o **offset** — ou **arrasta a grade** com o
+mouse — e vê o corte na hora. Ao lado, as **miniaturas de todos os frames** que vão entrar
+(clique numa célula pra deixá-la de fora) e um **zoom** com o recorte original e o frame
+resultante grandes, lado a lado, sobre xadrez — é onde a remoção do fundo se enxerga.
+`Alt`+clique pega a cor do fundo (no zoom, pega o pixel exato do frame já convertido). Dá pra
+**fatiar** (corte exato), **reduzir por cor dominante** — que recupera pixel art de verdade a
+partir de sprite gerado por IA ou screenshot em alta resolução (veja
+[Reduzir sprite de IA](#reduzir-sprite-de-ia)) —, **reduzir a paleta**, **remover o fundo** e
+até **adotar o tamanho da célula como tamanho do ícone do DMI**. Exportar **GIF animado** da
+direção atual, **spritesheet PNG** do state (colunas = direções, linhas = frames — o mesmo
+layout que o import entende) ou o **frame atual** como PNG.
+
+## Reduzir sprite de IA
+
+Imagem "estilo pixel art" em alta resolução (GPT-image, Sora, screenshot do Google) tem o
+pixel lógico borrado, com ruído e a grade fora de lugar. Downscale normal (nearest) amostra
+**um** pixel por célula — e pega justamente o ruído. O import "reduzir" pega a **cor
+dominante** de cada célula (binning com offset + mediana), que descarta o ruído sem
+inventar cor nova (nada de média/blur), e a célula com maioria de pixels transparentes vira
+transparente.
+
+Num teste com um frame real de 32×32 inflado pra 512×512 com ruído e fundo branco sujo:
+nearest recupera 74% dos pixels; a redução por cor dominante recupera **98,9%**.
+
+Duas opções do diálogo importam:
+
+- **Cores** (0 = todas): cada célula decide sua cor sozinha, então uma fonte suja vira
+  dezenas de tons quase iguais (286 cores onde o sprite tinha 24). Reduzir a paleta junta
+  esses tons de volta. É o parâmetro que mais precisa de ajuste — o contador de cores no
+  preview mostra quando a paleta explodiu.
+- **Fundo**: *só o que encosta na borda* (flood) preserva pixels da cor do fundo que estão
+  dentro do sprite (o branco do olho, se o fundo for branco); *a cor inteira* limpa todos.
+  A **tolerância** existe porque fundo de IA nunca é uma cor chapada.
+
+O algoritmo é um port do [proper-pixel-art](https://github.com/KennethJAllen/proper-pixel-art)
+(MIT, Kenneth Allen). A detecção de malha por Canny/Hough dele não foi portada: o icon size
+do DMI é conhecido, então a malha é uniforme e sai de graça.
 
 ## Atalhos
 
@@ -106,7 +146,7 @@ plugin oficial do Aseprite.
 | `lib/dmi.js` | metadata DMI + fatiar/montar a spritesheet |
 | `lib/gif.js` | encoder GIF89a (paleta por frequência, LZW, transparência, loop) |
 | `server.js` | servidor local: lista pastas, abre/grava `.dmi`, import/export, stat |
-| `public/pixels.js` | operações de pixel puras (desenho, região, HSL, transformações) |
+| `public/pixels.js` | operações de pixel puras (desenho, região, HSL, transformações, redução dominante, paleta) |
 | `public/binio.js` | protocolo binário client (frames nunca viram base64/JSON) |
 | `public/app.js` | a interface (sem framework) |
 | `public/smoke.html` | smoke test que dirige a UI real com eventos sintéticos |

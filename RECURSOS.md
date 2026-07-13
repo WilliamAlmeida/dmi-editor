@@ -76,6 +76,11 @@ veja o [README](./README.md).
 - **Nome**, **Dirs** (1/4/8), **Frames**, **Delay** por frame (1 = 0,1s), **Loop**
   (0 = infinito), **rewind** (vai e volta), **movement** (animação de movimento da BYOND).
 - Ao aumentar dirs (ex.: 4→8), as direções novas nascem copiando a dir S.
+- **Diminuir Frames (ou Dirs) não apaga os pixels**: o que sai fica **guardado** e volta
+  inteiro se você aumentar o número de novo (com o delay junto) — um aviso embaixo diz quantos
+  frames estão guardados. O descarte só vira definitivo quando você **salva** o arquivo.
+  Excluir um frame pelo botão (✕) é destrutivo de verdade: ele desloca os índices e descarta o
+  que estava guardado (aí é o `Ctrl+Z` que salva você).
 - **Gerar dir**: copia uma direção pra outra em todos os frames, com espelho opcional —
   ex.: `E → W espelhar` cria o lado esquerdo a partir do direito num clique.
 
@@ -83,13 +88,65 @@ veja o [README](./README.md).
 
 - **Busca** por nome (thumbnails carregam sob demanda — aguenta DMI grande de SS13).
 - Criar, duplicar, excluir, mover (botões ▲▼) ou **arrastar e soltar** pra reordenar.
+- Dá pra **excluir todos** os states: um DMI sem state nenhum é válido, e é justamente aí que
+  o **tamanho do ícone pode ser trocado à vontade** (não há frame pra converter). `Ctrl+Z`
+  traz o state de volta.
 - **⧉ state / ⇩ state**: copia o state inteiro e cola em **qualquer aba** — se o icon
   size for diferente, redimensiona (nearest) automaticamente.
 - **Duplicatas**: encontra states 100% idênticos e frames repetidos dentro de um state;
   clicar no resultado navega até ele.
-- **Importar PNG**: botão ou **arrastar o arquivo pra janela**. Se a imagem for múltiplo
-  do icon size, fatia a grade (você escolhe as direções); senão, oferece redimensionar,
-  centralizar ou alinhar no canto.
+- **Importar imagem** (**PNG, JPEG, WEBP, BMP, GIF**): botão ou **arrastar o arquivo pra
+  janela**. **GIF/WEBP animado vira um state animado**: cada quadro do arquivo é um frame,
+  com os **delays** convertidos pra escala da BYOND (inclusive fracionários — um GIF de
+  25fps vira `delay = 0.4`, não é esmagado pra 0,1s) e o **loop** preservado. Numa fonte
+  animada, a grade e o seletor de direções somem: cada quadro é um frame, ponto.
+
+  O diálogo ocupa a tela e mostra, lado a lado: a **imagem original com a grade desenhada por
+  cima** (ao vivo), as **miniaturas de todos os frames** que vão entrar, e um **zoom** com o
+  recorte original e o frame resultante grandes, sobre xadrez — passe o mouse numa miniatura
+  (ou na imagem) e ele acompanha. É a única forma de julgar a remoção do fundo: o que virou
+  transparente aparece como xadrez, grande. **Clique numa célula** (na imagem ou na miniatura)
+  pra excluí-la do import; **Alt+clique pega a cor do fundo** (no zoom, pega o pixel exato do
+  frame **já convertido** — a cor que a remoção vai realmente comparar).
+
+  **A grade**: digite **colunas/linhas** *ou* o **tamanho da célula** — um recalcula o outro —
+  e ajuste o **offset X/Y**, ou simplesmente **arraste a grade** com o mouse em cima da
+  imagem. O offset não muda o tamanho da célula (nudge é nudge): a grade pode passar da borda,
+  e o que fica de fora entra como **transparente** (a área que a grade não cobre aparece
+  escurecida). Serve pra spritesheet com margem, com o sprite fora do centro da célula, ou pra
+  recortar só um pedaço da imagem.
+
+  Escolha como converter:
+  - **fatiar (corte exato)** — cada célula vira um frame, byte a byte. Só existe quando a
+    célula tem exatamente o tamanho do ícone; senão o modo aparece desabilitado, dizendo
+    por quê. Quando a imagem é múltiplo do icon size, a grade real já vem preenchida (ex.:
+    4×2, não 1×1) e este é o modo pré-selecionado.
+  - **reduzir por cor dominante** — recupera pixel art de verdade a partir de sprite
+    gerado por IA ou screenshot em alta resolução (veja o [README](./README.md#reduzir-sprite-de-ia)).
+    Funciona com qualquer grade: fatia a fonte em colunas × linhas e reduz cada célula.
+  - **redimensionar (nearest)**, **centralizar** ou **alinhar no canto** — os modos secos,
+    bons pra pixel art que já está limpa, só fora de escala.
+- **Usar a célula como tamanho do ícone**: se a imagem se encaixa numa grade cujas células
+  não são do tamanho do ícone (ex.: 137×180 num DMI 32×32), dá pra adotar o tamanho da
+  célula como o novo tamanho do ícone do DMI. Num **DMI sem states** a troca é direta; com
+  states, ele avisa quantos frames existentes serão convertidos e deixa escolher entre
+  **escalar (nearest)** ou **manter os pixels (centralizado)**. Ctrl+Z desfaz tudo de uma vez.
+- **Cores** (0 = todas) no import: reduz a paleta (median cut) usando **todos os frames de
+  uma vez**, pra animação não trocar de cor a cada frame. O preview mostra quantas cores
+  o resultado tem.
+- **Fundo** no import: *manter*; *remover só o que encosta na borda* (flood — preserva
+  pixels da cor do fundo cercados pelo sprite); ou *remover a cor inteira, onde estiver*.
+  A cor vem detectada da borda (e é decidida **uma vez** pra todos os frames), mas você
+  pode **escolhê-la no seletor de cor** ou pegá-la com **Alt+clique** na imagem, numa
+  miniatura ou no **zoom** — nem todo fundo é branco. A **tolerância** (0–200) existe por dois
+  motivos: fundo de imagem gerada por IA vem com ruído, nunca chapado; e o **halo** de
+  anti-aliasing entre o fundo e o contorno é a *mistura* dos dois — num contorno preto sobre
+  branco, os cinzas do halo distam até ~130 da cor do fundo, então removê-los pede tolerância
+  alta. Com valores altos use *só o que encosta na borda* (flood): ele para no contorno; já
+  *a cor inteira* com tolerância alta come o miolo do sprite.
+  Quando a imagem não tem alfa nenhum (JPEG e BMP nunca têm) e a borda é de uma cor só,
+  o *flood* já vem marcado — mas só nesse caso: numa **foto**, onde o fundo não é chapado,
+  ele fica desmarcado pra não mutilar a imagem.
 
 ## Cores
 
@@ -125,7 +182,7 @@ veja o [README](./README.md).
   **recarrega sozinho**; com edições pendentes ele avisa, e o salvar pede confirmação
   antes de sobrescrever.
 - **Redimensionar** (no topo): o DMI inteiro — escalar (nearest) ou cortar/expandir com
-  âncora em 9 posições.
+  âncora em 9 posições. Num DMI **sem states** a troca é livre (não há frame pra converter).
 - Undo/redo por aba (`Ctrl+Z` / `Ctrl+Y`), com limite de memória — edições de pixel,
   metadata e operações estruturais, tudo reversível.
 - O servidor só enxerga a pasta raiz — nada fora dela pode ser lido ou gravado.

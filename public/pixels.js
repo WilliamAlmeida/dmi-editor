@@ -121,6 +121,269 @@ export function scaleNearest(src, sw, sh, dw, dh) {
   return dst;
 }
 
+// ---- reducao inteligente (port do proper-pixel-art, MIT — Kenneth Allen) ----
+//
+// Fonte "estilo pixel art" em alta resolucao (gerada por IA, screenshot da web) tem o
+// pixel logico borrado, com ruido e sangramento de borda. scaleNearest amostra UM pixel
+// por celula, entao pega justamente o ruido. Aqui cada celula vira a cor DOMINANTE dos
+// seus pixels, o que descarta o ruido sem inventar cor nova (nada de media/blur).
+
+const BIN_SIZE = 52;        // largura do bin RGB (=> 5 bins por canal)
+const ALPHA_THRESHOLD = 128; // alfa >= isso conta como opaco
+const MAJORITY = 0.5;        // celula com >= 50% de pixels transparentes vira transparente
+
+// Mediana por canal de uma lista de RGB (usada nos casos pequenos e no bin vencedor).
+// Par: media dos dois do meio com floor — igual ao numpy do projeto original.
+function medianRgb(rs, gs, bs) {
+  const mid = (arr) => {
+    arr.sort((a, b) => a - b);
+    const n = arr.length;
+    return Math.floor((arr[(n - 1) >> 1] + arr[n >> 1]) / 2);
+  };
+  return { r: mid(rs), g: mid(gs), b: mid(bs) };
+}
+
+// Cor dominante de um conjunto de pixels opacos, por binning com offset.
+// O espaco RGB e' fatiado em bins de binSize em DOIS grids: o normal e um deslocado meio
+// bin. Vence o grid cujo bin mais cheio for maior. Os dois grids existem porque um cluster
+// de cor que cai em cima da fronteira de um grid (e seria partido ao meio) fica inteiro no
+// outro. A cor devolvida e' a mediana do bin vencedor — robusta a outliers dentro do bin.
+// rs/gs/bs: arrays paralelos de canais dos pixels opacos.
+function dominantRgb(rs, gs, bs, binSize = BIN_SIZE) {
+  const n = rs.length;
+  if (n === 1) return { r: rs[0], g: gs[0], b: bs[0] };
+  if (n <= 3) return medianRgb([...rs], [...gs], [...bs]);
+
+  const nb = Math.floor(255 / binSize) + 1;
+  const off = binSize >> 1;
+  const counts1 = new Int32Array(nb * nb * nb);
+  const counts2 = new Int32Array(nb * nb * nb);
+  const idx1 = new Int32Array(n);
+  const idx2 = new Int32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const r1 = Math.floor(rs[i] / binSize), g1 = Math.floor(gs[i] / binSize), b1 = Math.floor(bs[i] / binSize);
+    // clamp em 255 ANTES de dividir (senao o deslocamento estoura o ultimo bin)
+    const r2 = Math.floor(Math.min(rs[i] + off, 255) / binSize);
+    const g2 = Math.floor(Math.min(gs[i] + off, 255) / binSize);
+    const b2 = Math.floor(Math.min(bs[i] + off, 255) / binSize);
+    idx1[i] = (r1 * nb + g1) * nb + b1;
+    idx2[i] = (r2 * nb + g2) * nb + b2;
+    counts1[idx1[i]]++;
+    counts2[idx2[i]]++;
+  }
+
+  let dom1 = 0, max1 = -1, dom2 = 0, max2 = -1;
+  for (let k = 0; k < counts1.length; k++) {
+    if (counts1[k] > max1) { max1 = counts1[k]; dom1 = k; }
+    if (counts2[k] > max2) { max2 = counts2[k]; dom2 = k; }
+  }
+
+  const useFirst = max1 >= max2;
+  const idx = useFirst ? idx1 : idx2;
+  const dom = useFirst ? dom1 : dom2;
+
+  const rs2 = [], gs2 = [], bs2 = [];
+  for (let i = 0; i < n; i++) {
+    if (idx[i] === dom) { rs2.push(rs[i]); gs2.push(gs[i]); bs2.push(bs[i]); }
+  }
+  return medianRgb(rs2, gs2, bs2);
+}
+
+// Reduz src (sw x sh) para dw x dh pegando a cor dominante de cada celula da malha.
+// A malha e' uniforme (o icon size do DMI e' conhecido), entao nao precisamos detectar as
+// linhas com Canny/Hough como o projeto original — so' fatiar em dw x dh celulas.
+// Celula com maioria de pixels transparentes vira totalmente transparente.
+export function downsampleDominant(src, sw, sh, dw, dh, opts = {}) {
+  const { binSize = BIN_SIZE, alphaThreshold = ALPHA_THRESHOLD, majority = MAJORITY } = opts;
+  const dst = new Uint8ClampedArray(dw * dh * 4);
+  const rs = [], gs = [], bs = [];
+
+  for (let cy = 0; cy < dh; cy++) {
+    const y0 = Math.round((cy * sh) / dh);
+    const y1 = Math.max(y0 + 1, Math.round(((cy + 1) * sh) / dh));
+    for (let cx = 0; cx < dw; cx++) {
+      const x0 = Math.round((cx * sw) / dw);
+      const x1 = Math.max(x0 + 1, Math.round(((cx + 1) * sw) / dw));
+
+      rs.length = gs.length = bs.length = 0;
+      let total = 0;
+      for (let y = y0; y < y1 && y < sh; y++) {
+        for (let x = x0; x < x1 && x < sw; x++) {
+          const o = idx(sw, x, y);
+          total++;
+          if (src[o + 3] >= alphaThreshold) {
+            rs.push(src[o]);
+            gs.push(src[o + 1]);
+            bs.push(src[o + 2]);
+          }
+        }
+      }
+
+      const d = idx(dw, cx, cy);
+      if (total === 0 || rs.length <= total * (1 - majority)) continue; // fica transparente
+      const c = dominantRgb(rs, gs, bs, binSize);
+      dst[d] = c.r;
+      dst[d + 1] = c.g;
+      dst[d + 2] = c.b;
+      dst[d + 3] = 255;
+    }
+  }
+  return dst;
+}
+
+// ---- quantizacao de paleta (median cut) ----
+//
+// A reducao dominante tira o ruido de DENTRO da celula, mas cada celula ainda decide sua
+// mediana sozinha — numa fonte suja isso deixa dezenas de tons quase iguais (ex: 286 cores
+// onde o sprite original tinha 24). Reduzir a paleta junta esses tons de volta.
+// A paleta e' construida a partir de TODOS os frames de uma vez: paleta por frame faria a
+// animacao mudar de cor a cada frame.
+
+export function buildPalette(frameList, numColors) {
+  const pts = [];
+  for (const px of frameList) {
+    for (let o = 0; o < px.length; o += 4) {
+      if (px[o + 3] > 0) pts.push([px[o], px[o + 1], px[o + 2]]);
+    }
+  }
+  if (!pts.length) return [];
+
+  // median cut: parte sempre a caixa de maior amplitude, no canal de maior amplitude
+  let boxes = [pts];
+  while (boxes.length < numColors) {
+    let bi = -1, bestRange = 0, bestCh = 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const box = boxes[i];
+      if (box.length < 2) continue;
+      for (let ch = 0; ch < 3; ch++) {
+        let mn = 255, mx = 0;
+        for (const p of box) {
+          if (p[ch] < mn) mn = p[ch];
+          if (p[ch] > mx) mx = p[ch];
+        }
+        if (mx - mn > bestRange) { bestRange = mx - mn; bi = i; bestCh = ch; }
+      }
+    }
+    if (bi < 0) break; // todas as caixas ja' sao de cor unica
+    const box = boxes[bi];
+    box.sort((a, b) => a[bestCh] - b[bestCh]);
+    const mid = box.length >> 1;
+    boxes.splice(bi, 1, box.slice(0, mid), box.slice(mid));
+  }
+
+  // Cada caixa e' representada pela cor MAIS FREQUENTE dentro dela, nao pela media: a media
+  // inventaria uma cor que nao existe na fonte (juntar preto e vermelho daria um marrom que
+  // nao esta' no sprite). Toda cor da paleta e' uma cor real da imagem.
+  return boxes.map((box) => {
+    const counts = new Map();
+    let best = box[0], bestN = 0;
+    for (const p of box) {
+      const key = (p[0] << 16) | (p[1] << 8) | p[2];
+      const n = (counts.get(key) ?? 0) + 1;
+      counts.set(key, n);
+      if (n > bestN) { bestN = n; best = p; }
+    }
+    return { r: best[0], g: best[1], b: best[2] };
+  });
+}
+
+// Mapeia cada pixel opaco pra cor mais proxima da paleta (alfa intocado).
+export function applyPalette(px, palette) {
+  if (!palette.length) return;
+  for (let o = 0; o < px.length; o += 4) {
+    if (px[o + 3] === 0) continue;
+    let best = palette[0], bestD = Infinity;
+    for (const c of palette) {
+      const dr = px[o] - c.r, dg = px[o + 1] - c.g, db = px[o + 2] - c.b;
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    px[o] = best.r;
+    px[o + 1] = best.g;
+    px[o + 2] = best.b;
+  }
+}
+
+// ---- remocao de fundo ----
+
+// Cor mais frequente na borda de 1px (so' pixels opacos) + que FRACAO da borda ela ocupa.
+// O share separa "sprite em fundo chapado" (share ~1) de "foto" (share ~0.1): so' faz
+// sentido oferecer remocao automatica de fundo no primeiro caso.
+// color = null quando a borda ja' e' toda transparente (nao ha' fundo pra remover).
+export function boundaryStats(px, w, h, alphaThreshold = ALPHA_THRESHOLD) {
+  const counts = new Map();
+  let total = 0;
+  const add = (x, y) => {
+    const o = idx(w, x, y);
+    total++;
+    if (px[o + 3] < alphaThreshold) return;
+    const key = (px[o] << 16) | (px[o + 1] << 8) | px[o + 2];
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  for (let x = 0; x < w; x++) { add(x, 0); add(x, h - 1); }
+  for (let y = 1; y < h - 1; y++) { add(0, y); add(w - 1, y); }
+
+  let best = null, bestN = 0;
+  for (const [key, n] of counts) if (n > bestN) { best = key; bestN = n; }
+  if (best === null) return { color: null, share: 0 };
+  return {
+    color: { r: (best >> 16) & 255, g: (best >> 8) & 255, b: best & 255 },
+    share: total ? bestN / total : 0,
+  };
+}
+
+export const boundaryColor = (px, w, h, alphaThreshold = ALPHA_THRESHOLD) =>
+  boundaryStats(px, w, h, alphaThreshold).color;
+
+// Fundo de imagem gerada por IA nunca e' uma cor chapada: vem com ruido, entao comparar
+// RGB exato deixa metade dele pra tras. tol = diferenca maxima por canal (0 = exato).
+const nearColor = (px, o, c, tol) =>
+  Math.abs(px[o] - c.r) <= tol && Math.abs(px[o + 1] - c.g) <= tol && Math.abs(px[o + 2] - c.b) <= tol;
+
+// Zera o alfa de TODOS os pixels dessa cor, onde quer que estejam (e' o que o
+// proper-pixel-art faz). Some com o fundo de uma vez, mas tambem come pixels da mesma cor
+// dentro do sprite — ex: o branco do olho, se o fundo for branco.
+export function clearColorExact(px, from, tol = 0) {
+  let n = 0;
+  for (let o = 0; o < px.length; o += 4) {
+    if (px[o + 3] > 0 && nearColor(px, o, from, tol)) {
+      px[o] = px[o + 1] = px[o + 2] = px[o + 3] = 0;
+      n++;
+    }
+  }
+  return n;
+}
+
+// Zera o alfa so' da regiao CONECTADA a' borda (flood 4-conexo a partir das bordas).
+// Preserva pixels da mesma cor cercados pelo sprite. O flood ATRAVESSA pixels que ja' sao
+// transparentes (sem contar), senao um pedaco de fundo alcancavel so' por uma regiao ja'
+// transparente ficaria pra tras.
+export function clearColorFlood(px, w, h, from, tol = 0) {
+  const seen = new Uint8Array(w * h);
+  const stack = [];
+  for (let x = 0; x < w; x++) stack.push([x, 0], [x, h - 1]);
+  for (let y = 0; y < h; y++) stack.push([0, y], [w - 1, y]);
+
+  let n = 0;
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+    const k = y * w + x;
+    if (seen[k]) continue;
+    const o = idx(w, x, y);
+    const transparent = px[o + 3] === 0;
+    if (!transparent && !nearColor(px, o, from, tol)) continue;
+    seen[k] = 1;
+    if (!transparent) {
+      px[o] = px[o + 1] = px[o + 2] = px[o + 3] = 0;
+      n++;
+    }
+    stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+  }
+  return n;
+}
+
 // Coloca src num canvas dw x dh transparente, com o canto sup-esq de src em (ox, oy).
 // Serve tanto pra cortar (ox negativo) quanto expandir (ox positivo).
 export function placed(src, sw, sh, dw, dh, ox, oy) {

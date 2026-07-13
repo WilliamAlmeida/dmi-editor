@@ -184,14 +184,18 @@ aside {
 }
 #toolbar .tool { min-width: 32px; font-size: 15px; }
 
+/* flex + margin:auto no filho, NÃO place-items:center: item centralizado maior que a caixa
+   transborda pra cima/esquerda, onde o scroll não alcança — com zoom alto o navegador tentava
+   "trazer o canvas à vista" rolando o body (overflow:hidden) e a UI inteira saía do lugar.
+   margin:auto colapsa pra 0 no lado que transborda: tudo continua alcançável. */
 #canvasWrap {
   flex: 1;
-  display: grid;
-  place-items: center;
+  display: flex;
   overflow: auto;
   padding: 20px;
   background: #101216;
 }
+#canvasWrap > * { margin: auto; flex-shrink: 0; }
 .empty { color: var(--muted); text-align: center; line-height: 1.8; }
 
 #editor {
@@ -300,6 +304,8 @@ dialog menu { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8p
 /* radios na horizontal, quebrando linha quando faltar espaço */
 dialog .radios { display: flex; flex-direction: row; flex-wrap: wrap; gap: 5px 16px; align-items: center; margin: 8px 0; }
 dialog .radios .chk { margin: 0; flex-direction: row; }
+/* .chk é sempre checkbox+texto na horizontal — o label-coluna do dialog não vale pra ele */
+dialog .chk { flex-direction: row; align-items: center; }
 dialog .radios .hint { margin: 0; width: 100%; }
 /* diálogos com preview ao vivo ficam encostados na lateral, longe do canvas */
 #dlgHue, #dlgReplace {
@@ -344,6 +350,110 @@ dialog .mini { font-size: 11px; padding: 3px 8px; margin-bottom: 6px; }
   border: 1px solid var(--line); border-radius: 6px;
 }
 #sheetPreview { image-rendering: pixelated; display: block; }
+
+/* ---------- import de imagem ---------- */
+/* O diálogo ocupa a tela: julgar a grade e a remoção do fundo exige ver os pixels grandes.
+   O <form> é a coluna que rola — o <menu> (Importar/Cancelar) nunca pode sumir. */
+#dlgImport {
+  width: 96vw; height: 92vh; max-width: none; max-height: none;
+  overflow: hidden; /* nada pode vazar pra fora do diálogo */
+}
+#dlgImport form { display: flex; flex-direction: column; height: 100%; min-width: 0; }
+
+/* fonte (com a grade por cima) · miniaturas · zoom; opções embaixo, ocupando a largura */
+.imp-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 270px minmax(0, 340px);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px 14px;
+  flex: 1;
+  min-height: 0;
+}
+/* Item de grid/flex tem min-width:auto = min-content — e o min-content de um canvas é a
+   LARGURA NATIVA dele (820px numa foto). Sem isto, o canvas estoura a coluna e vaza o
+   diálogo inteiro pra fora da tela. */
+.imp-body > * { min-width: 0; min-height: 0; }
+.imp-opts {
+  grid-column: 1 / -1;
+  max-height: 34vh; overflow: auto;
+  padding-right: 6px;
+  /* max-width: 860px; */
+}
+.imp-opts .radios { flex-direction: column; align-items: flex-start; gap: 4px; }
+dialog .cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.imp-fields { display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr)); gap: 8px; }
+
+/* fonte: dois canvases empilhados — a imagem (pintada uma vez) e o overlay da grade */
+.imp-src { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.imp-src-box {
+  position: relative; align-self: start; max-width: 100%;
+  background-color: #2b2f37;
+  background-image:
+    linear-gradient(45deg, #363b45 25%, transparent 25%, transparent 75%, #363b45 75%),
+    linear-gradient(45deg, #363b45 25%, transparent 25%, transparent 75%, #363b45 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.imp-src-box canvas { display: block; }
+#impSrc { image-rendering: pixelated; }
+#impSrcOv { position: absolute; inset: 0; cursor: grab; }
+#impSrcOv:active { cursor: grabbing; }
+#impSrcLbl { margin: 6px 0 0; }
+
+/* zoom: o frame grande, ao lado do recorte original — é onde a remoção do fundo se enxerga */
+.imp-zoom { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.imp-zoom-pair {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px; flex: 1; min-width: 0; min-height: 0;
+}
+.imp-zoom-cell { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.imp-zoom-cell .hint { margin: 0 0 4px; }
+.imp-zoom-box {
+  flex: 1; min-width: 0; min-height: 120px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background-color: #2b2f37;
+  background-image:
+    linear-gradient(45deg, #363b45 25%, transparent 25%, transparent 75%, #363b45 75%),
+    linear-gradient(45deg, #363b45 25%, transparent 25%, transparent 75%, #363b45 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.imp-zoom-box canvas { image-rendering: pixelated; display: block; }
+#impZoomOut { cursor: crosshair; }
+#impZoomLbl { margin: 6px 0 0; }
+
+/* resultado: uma miniatura por frame; excluídas ficam apagadas */
+.imp-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.imp-thumbs {
+  display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start;
+  flex: 1; overflow: auto;
+  padding: 6px; min-height: 60px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+}
+.imp-thumbs canvas {
+  width: 40px; height: 40px; image-rendering: pixelated; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 3px; background: #14161a;
+}
+.imp-thumbs canvas.off { opacity: .28; filter: grayscale(1); border-color: var(--danger); }
+.imp-thumb-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#impPrevLbl { margin: 6px 0 0; }
+.imp-thumb-foot .mini { margin: 6px 0 0; }
+
+.imp-bg-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.imp-bg-row input[type="color"] { width: 34px; padding: 0; }
+.imp-bg-row .slider { flex: 1; min-width: 120px; margin: 0; }
+.imp-swatch {
+  display: inline-block; width: 9px; height: 9px; vertical-align: -1px;
+  border: 1px solid var(--line); border-radius: 2px;
+}
+
+/* aviso da lixeira de frames: sem ele o usuário acha que os frames sumiram pra sempre */
+.trim-hint {
+  margin: 2px 0 0; font-size: 11px; color: var(--accent);
+}
+.trim-hint:empty { display: none; }
 
 /* ---------- menu de contexto (arquivos) ---------- */
 .ctx {

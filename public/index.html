@@ -47,7 +47,7 @@
     <div class="state-tools">
       <input type="search" id="stateSearch" placeholder="buscar state...">
       <div class="row">
-        <button id="btnImport" title="Importar um PNG como state novo (ou arraste o arquivo pra cá)">Importar PNG</button>
+        <button id="btnImport" title="Importar PNG, JPEG, WEBP, BMP ou GIF como state novo — GIF animado vira um state animado (ou arraste o arquivo pra cá)">Importar imagem</button>
         <button id="btnDups" title="Procurar states e frames duplicados">Duplicatas</button>
         <button id="btnStateCopy" title="Copiar o state (cole em outra aba/arquivo)">&#10697; state</button>
         <button id="btnStatePaste" title="Colar o state copiado">&#8681; state</button>
@@ -86,7 +86,13 @@
   <div id="canvasWrap">
     <div id="empty" class="empty">
       <p>Abra um <b>.dmi</b> na lista à esquerda<br>ou crie um <b>Novo</b>.<br><br>
-      <small>Dica: arraste um PNG pra cá pra importar como state.</small></p>
+      <small>Dica: arraste uma imagem (PNG, JPEG, WEBP, BMP, GIF) pra cá pra importar como state.</small></p>
+    </div>
+    <div id="noStates" class="empty" hidden>
+      <p>Este DMI não tem nenhum <b>icon state</b>.<br>
+      Crie um com <b>+</b> no painel Icon states, ou <b>Importe uma imagem</b>.<br><br>
+      <small>O tamanho do ícone (<b>Redimensionar</b>) pode ser trocado à vontade agora —
+      não há nenhum frame pra converter.</small></p>
     </div>
     <canvas id="editor" hidden></canvas>
   </div>
@@ -140,6 +146,7 @@
       <label class="chk"><input type="checkbox" id="pRewind"> rewind</label>
       <label class="chk"><input type="checkbox" id="pMovement"> movement</label>
     </div>
+    <p id="pFramesTrim" class="trim-hint"></p>
     <div class="dircopy" title="Copia uma direção pra outra em todos os frames (com espelho gera W a partir de E, etc.)">
       <span>Gerar dir:</span>
       <select id="dcFrom"></select>
@@ -179,7 +186,7 @@
   <span id="stSize"></span>
 </footer>
 
-<input type="file" id="fileInput" accept=".png" hidden>
+<input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.webp,.bmp,.gif,image/png,image/jpeg,image/webp,image/bmp,image/gif" hidden>
 
 <dialog id="dlgNew">
   <form method="dialog">
@@ -190,7 +197,7 @@
     <p class="hint">Será criado na pasta atual dos Arquivos.</p>
     <menu>
       <button value="cancel">Cancelar</button>
-      <button value="ok" class="primary">Criar</button>
+      <button id="btnNewOk" value="ok" class="primary">Criar</button>
     </menu>
   </form>
 </dialog>
@@ -222,7 +229,7 @@
     <p class="hint">Aplica em todos os states e frames do arquivo.</p>
     <menu>
       <button value="cancel">Cancelar</button>
-      <button value="ok" class="primary">Aplicar</button>
+      <button id="btnResizeOk" value="ok" class="primary">Aplicar</button>
     </menu>
   </form>
 </dialog>
@@ -279,22 +286,93 @@
 
 <dialog id="dlgImport">
   <form method="dialog">
-    <h3>Importar PNG como state</h3>
+    <h3>Importar imagem como state</h3>
     <p id="impInfo" class="hint"></p>
-    <div id="impAligned">
-      <label>Direções
-        <select id="impDirs"></select>
-      </label>
-      <p class="hint">Células lidas da esquerda p/ direita, de cima p/ baixo, na ordem frame&times;direção — <span id="impFramesLbl"></span></p>
-    </div>
-    <div id="impMis" class="radios" hidden>
-      <label class="chk"><input type="radio" name="imode" value="scale" checked> redimensionar para caber (nearest)</label>
-      <label class="chk"><input type="radio" name="imode" value="center"> centralizar (corta o excesso)</label>
-      <label class="chk"><input type="radio" name="imode" value="crop"> alinhar no canto superior esquerdo</label>
+    <div class="imp-body">
+      <div class="imp-src">
+        <div class="imp-src-box">
+          <canvas id="impSrc"></canvas>
+          <canvas id="impSrcOv"></canvas>
+        </div>
+        <p id="impSrcLbl" class="hint"></p>
+      </div>
+
+      <div class="imp-right">
+        <div id="impThumbs" class="imp-thumbs"></div>
+        <div class="imp-thumb-foot">
+          <p id="impPrevLbl" class="hint"></p>
+          <button id="btnImpAll" class="mini">marcar/desmarcar todos</button>
+        </div>
+      </div>
+
+      <div class="imp-zoom">
+        <div class="imp-zoom-pair">
+          <div class="imp-zoom-cell">
+            <span class="hint">original</span>
+            <div class="imp-zoom-box"><canvas id="impZoomSrc"></canvas></div>
+          </div>
+          <div class="imp-zoom-cell">
+            <span class="hint">resultado</span>
+            <div class="imp-zoom-box"><canvas id="impZoomOut" title="Alt+clique: pegar a cor do fundo deste pixel"></canvas></div>
+          </div>
+        </div>
+        <p id="impZoomLbl" class="hint"></p>
+      </div>
+
+      <div class="imp-opts">
+        <div class="radios">
+          <span class="hint">Como converter:</span>
+          <label class="chk"><input type="radio" name="imode" value="slice"> <span id="impSliceLbl">fatiar (corte exato)</span></label>
+          <label class="chk"><input type="radio" name="imode" value="reduce" checked> reduzir &mdash; cor dominante por célula</label>
+          <label class="chk"><input type="radio" name="imode" value="scale"> redimensionar (nearest)</label>
+          <label class="chk"><input type="radio" name="imode" value="center"> centralizar</label>
+          <label class="chk"><input type="radio" name="imode" value="crop"> canto superior esquerdo</label>
+        </div>
+        <div id="impCells" class="imp-fields">
+          <label>Colunas <input type="number" id="impCols" min="1" max="256" value="1"></label>
+          <label>Linhas <input type="number" id="impRows" min="1" max="256" value="1"></label>
+          <label>Célula (largura) <input type="number" id="impCellW" min="1" value="32"></label>
+          <label>Célula (altura) <input type="number" id="impCellH" min="1" value="32"></label>
+          <label>Offset X <input type="number" id="impOffX" value="0"></label>
+          <label>Offset Y <input type="number" id="impOffY" value="0"></label>
+          <label id="impDirsWrap" hidden>Direções
+            <select id="impDirs"></select>
+          </label>
+        </div>
+        <label class="chk" id="impSetSizeWrap">
+          <input type="checkbox" id="impSetSize"> usar <b id="impCellLbl">32×32</b> como tamanho do ícone do DMI
+        </label>
+        <label id="impFitWrap" hidden>Os frames que já existem no DMI:
+          <select id="impFit">
+            <option value="scale">escalar (nearest)</option>
+            <option value="place">manter os pixels (centralizado)</option>
+          </select>
+        </label>
+
+        <div class="radios">
+          <span class="hint">Fundo:</span>
+          <label class="chk"><input type="radio" name="ibg" value="none" checked> manter</label>
+          <label class="chk"><input type="radio" name="ibg" value="flood"> remover só o que encosta na borda</label>
+          <label class="chk"><input type="radio" name="ibg" value="exact"> remover a cor inteira, onde estiver</label>
+        </div>
+        <div id="impBgRow" class="imp-bg-row" hidden>
+          <input type="color" id="impBgColor" value="#ffffff" title="Cor do fundo a remover">
+          <button id="btnImpBgAuto" class="mini">detectar de novo</button>
+          <label class="slider">Tolerância <span id="impTolV">12</span>
+            <input type="range" id="impTol" min="0" max="200" value="12"
+              title="O halo entre o fundo e o contorno é a mistura dos dois: fica LONGE da cor do fundo (até ~130 num contorno preto sobre branco). Com valores altos prefira 'só o que encosta na borda' — 'a cor inteira' come o miolo do sprite.">
+          </label>
+        </div>
+        <p id="impBgInfo" class="hint"></p>
+
+        <label>Cores (0 = todas)
+          <input type="number" id="impColors" min="0" max="256" value="0">
+        </label>
+      </div>
     </div>
     <menu>
       <button value="cancel">Cancelar</button>
-      <button value="ok" class="primary">Importar</button>
+      <button id="btnImpOk" value="ok" class="primary">Importar</button>
     </menu>
   </form>
 </dialog>
