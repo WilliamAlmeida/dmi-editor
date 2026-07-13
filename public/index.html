@@ -10,7 +10,6 @@
 
 <header>
   <div class="brand">DMI<b>Editor</b></div>
-  <div id="fileTitle" class="file-title">nenhum arquivo aberto</div>
   <div class="spacer"></div>
   <button id="btnUndo" class="icon" title="Desfazer (Ctrl+Z)">&#8630;</button>
   <button id="btnRedo" class="icon" title="Refazer (Ctrl+Y)">&#8631;</button>
@@ -19,10 +18,13 @@
   <span id="zoomLabel" class="zoom-label">100%</span>
   <button id="btnZoomIn" class="icon" title="Zoom +">+</button>
   <div class="sep"></div>
+  <button id="btnResize" title="Redimensionar / cortar / expandir o DMI inteiro">Redimensionar</button>
   <button id="btnNew">Novo</button>
   <button id="btnSaveAs">Salvar como</button>
   <button id="btnSave" class="primary" title="Ctrl+S">Salvar</button>
 </header>
+
+<div id="tabbar" hidden></div>
 
 <aside id="left">
   <section class="panel files">
@@ -42,39 +44,56 @@
         <button id="btnStateDel" class="icon danger" title="Excluir state">&times;</button>
       </span>
     </h2>
+    <div class="state-tools">
+      <input type="search" id="stateSearch" placeholder="buscar state...">
+      <div class="row">
+        <button id="btnImport" title="Importar um PNG como state novo (ou arraste o arquivo pra cá)">Importar PNG</button>
+        <button id="btnDups" title="Procurar states e frames duplicados">Duplicatas</button>
+        <button id="btnStateCopy" title="Copiar o state (cole em outra aba/arquivo)">&#10697; state</button>
+        <button id="btnStatePaste" title="Colar o state copiado">&#8681; state</button>
+      </div>
+    </div>
     <ul id="stateList" class="list states-list"></ul>
   </section>
 </aside>
 
 <main id="stage">
   <div id="toolbar">
+    <button class="tool" data-tool="select" title="Seleção (M) — arraste p/ selecionar, arraste dentro p/ mover, Alt+arrastar copia">&#11026;</button>
     <button class="tool" data-tool="pencil" title="Lápis (B)">&#9998;</button>
     <button class="tool" data-tool="eraser" title="Borracha (E)">&#9003;</button>
     <button class="tool" data-tool="fill" title="Balde (G)">&#9634;</button>
     <button class="tool" data-tool="picker" title="Conta-gotas (I)">&#9679;</button>
     <button class="tool" data-tool="line" title="Linha (L)">&#9585;</button>
     <button class="tool" data-tool="rect" title="Retângulo (R)">&#9744;</button>
+    <label class="chk" title="Espessura do lápis/borracha/linha — teclas [ e ]">esp.
+      <input type="number" id="brushSize" min="1" max="16" value="1" class="brush">
+    </label>
     <div class="sep"></div>
     <label class="chk"><input type="checkbox" id="fillShape"> preencher</label>
+    <label class="chk" title="Desenha espelhado no eixo vertical"><input type="checkbox" id="symChk"> espelho</label>
+    <label class="chk" title="Mostra o frame anterior/seguinte como fantasma"><input type="checkbox" id="onionChk"> onion skin</label>
     <div class="sep"></div>
-    <button id="btnFlipH" title="Espelhar horizontal">&#8646;</button>
-    <button id="btnFlipV" title="Espelhar vertical">&#8645;</button>
-    <button id="btnClear" title="Limpar frame (Del)">Limpar</button>
-    <button id="btnCopy" title="Copiar frame (Ctrl+C)">Copiar</button>
-    <button id="btnPaste" title="Colar frame (Ctrl+V)">Colar</button>
+    <button id="btnFlipH" title="Espelhar horizontal (a seleção, ou o frame todo)">&#8646;</button>
+    <button id="btnFlipV" title="Espelhar vertical (a seleção, ou o frame todo)">&#8645;</button>
+    <button id="btnClear" title="Limpar seleção/frame (Del)">Limpar</button>
+    <button id="btnCopy" title="Copiar seleção ou frame (Ctrl+C)">Copiar</button>
+    <button id="btnPaste" title="Colar (Ctrl+V)">Colar</button>
     <div class="sep"></div>
     <label class="chk"><input type="checkbox" id="showGrid" checked> grade</label>
   </div>
 
   <div id="canvasWrap">
     <div id="empty" class="empty">
-      <p>Abra um <b>.dmi</b> na lista à esquerda<br>ou crie um <b>Novo</b>.</p>
+      <p>Abra um <b>.dmi</b> na lista à esquerda<br>ou crie um <b>Novo</b>.<br><br>
+      <small>Dica: arraste um PNG pra cá pra importar como state.</small></p>
     </div>
     <canvas id="editor" hidden></canvas>
   </div>
 
   <div id="colorbar">
     <input type="color" id="colorPick" value="#ffffff" title="Cor">
+    <button id="btnSaveColor" class="icon" title="Salvar a cor atual na paleta (persistente)">&#9733;</button>
     <label class="alpha">alfa
       <input type="range" id="alphaRange" min="0" max="255" value="255">
       <span id="alphaVal">255</span>
@@ -85,9 +104,22 @@
 
 <aside id="right">
   <section class="panel">
-    <h2>Preview <button id="btnPlay" class="icon" title="Play/Pause">&#9654;</button></h2>
+    <h2>Preview
+      <span class="head-btns">
+        <button id="btnPlay" class="icon" title="Play/Pause">&#9654;</button>
+      </span>
+    </h2>
     <div class="preview-box">
       <canvas id="preview" width="32" height="32"></canvas>
+      <div class="scrub-row">
+        <input type="range" id="scrub" min="0" max="0" value="0" title="Timeline — arrasta pra ver frame a frame">
+        <span id="scrubLabel">1/1</span>
+      </div>
+      <div class="row exports">
+        <button id="btnExpGif" title="Exportar a animação da direção atual como GIF">GIF</button>
+        <button id="btnExpSheet" title="Exportar o state como spritesheet PNG (colunas = direções, linhas = frames)">PNG folha</button>
+        <button id="btnExpFrame" title="Exportar só o frame atual como PNG">PNG frame</button>
+      </div>
     </div>
   </section>
 
@@ -108,6 +140,22 @@
       <label class="chk"><input type="checkbox" id="pRewind"> rewind</label>
       <label class="chk"><input type="checkbox" id="pMovement"> movement</label>
     </div>
+    <div class="dircopy" title="Copia uma direção pra outra em todos os frames (com espelho gera W a partir de E, etc.)">
+      <span>Gerar dir:</span>
+      <select id="dcFrom"></select>
+      <span>&rarr;</span>
+      <select id="dcTo"></select>
+      <label class="chk"><input type="checkbox" id="dcFlip" checked> espelhar</label>
+      <button id="btnDirCopy" class="icon">OK</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Ajustes de cor</h2>
+    <div class="row adjustes">
+      <button id="btnHue" title="Matiz / saturação / brilho — por frame, state ou DMI inteiro">Matiz/Sat/Brilho</button>
+      <button id="btnReplace" title="Substituir uma cor exata — por frame, state ou DMI inteiro">Substituir cor</button>
+    </div>
   </section>
 
   <section class="panel grow">
@@ -126,9 +174,12 @@
 <footer id="status">
   <span id="stPath">—</span>
   <span class="spacer"></span>
+  <span id="stSel"></span>
   <span id="stPixel"></span>
   <span id="stSize"></span>
 </footer>
+
+<input type="file" id="fileInput" accept=".png" hidden>
 
 <dialog id="dlgNew">
   <form method="dialog">
@@ -140,6 +191,145 @@
     <menu>
       <button value="cancel">Cancelar</button>
       <button value="ok" class="primary">Criar</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlgResize">
+  <form method="dialog">
+    <h3>Redimensionar DMI</h3>
+    <div class="radios">
+      <label class="chk"><input type="radio" name="rmode" value="place" checked> Cortar/Expandir (mantém os pixels)</label>
+      <label class="chk"><input type="radio" name="rmode" value="scale"> Escalar (nearest)</label>
+    </div>
+    <div class="cols2">
+      <label>Largura <input type="number" id="rW" min="1" max="512"></label>
+      <label>Altura <input type="number" id="rH" min="1" max="512"></label>
+    </div>
+    <label>Âncora (p/ cortar/expandir)
+      <select id="rAnchor">
+        <option value="0,0">canto superior esquerdo</option>
+        <option value="0.5,0">topo</option>
+        <option value="1,0">canto superior direito</option>
+        <option value="0,0.5">esquerda</option>
+        <option value="0.5,0.5" selected>centro</option>
+        <option value="1,0.5">direita</option>
+        <option value="0,1">canto inferior esquerdo</option>
+        <option value="0.5,1">baixo</option>
+        <option value="1,1">canto inferior direito</option>
+      </select>
+    </label>
+    <p class="hint">Aplica em todos os states e frames do arquivo.</p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button value="ok" class="primary">Aplicar</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlgHue">
+  <form method="dialog">
+    <h3>Matiz / Saturação / Brilho</h3>
+    <label class="slider">Matiz <span id="hHv">0</span>°
+      <input type="range" id="hH" min="-180" max="180" value="0">
+    </label>
+    <label class="slider">Saturação <span id="hSv">0</span>%
+      <input type="range" id="hS" min="-100" max="100" value="0">
+    </label>
+    <label class="slider">Brilho <span id="hLv">0</span>%
+      <input type="range" id="hL" min="-100" max="100" value="0">
+    </label>
+    <div class="radios">
+      <span class="hint">Aplicar em:</span>
+      <label class="chk"><input type="radio" name="hscope" value="frame" checked> só este frame</label>
+      <label class="chk" id="hSelWrap" hidden><input type="radio" name="hscope" value="selframes"> <span id="hSelLbl">frames selecionados</span></label>
+      <label class="chk"><input type="radio" name="hscope" value="state"> o state inteiro</label>
+      <label class="chk"><input type="radio" name="hscope" value="dmi"> o DMI inteiro</label>
+    </div>
+    <p class="hint">O preview no editor mostra o frame atual. Ctrl+clique na grade de frames seleciona vários.</p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button value="ok" class="primary">Aplicar</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlgReplace">
+  <form method="dialog">
+    <h3>Substituir cor</h3>
+    <div class="cols2">
+      <label>De <input type="color" id="repFrom" value="#ffffff"></label>
+      <label>Para <input type="color" id="repTo" value="#ff0000"></label>
+    </div>
+    <button id="btnRepUseCur" class="mini">usar a cor selecionada como origem</button>
+    <div class="radios">
+      <span class="hint">Aplicar em:</span>
+      <label class="chk"><input type="radio" name="rscope" value="frame" checked> só este frame</label>
+      <label class="chk" id="rSelWrap" hidden><input type="radio" name="rscope" value="selframes"> <span id="rSelLbl">frames selecionados</span></label>
+      <label class="chk"><input type="radio" name="rscope" value="state"> o state inteiro</label>
+      <label class="chk"><input type="radio" name="rscope" value="dmi"> o DMI inteiro</label>
+    </div>
+    <p class="hint">Troca RGB exato (alfa é preservado).</p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button value="ok" class="primary">Substituir</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlgImport">
+  <form method="dialog">
+    <h3>Importar PNG como state</h3>
+    <p id="impInfo" class="hint"></p>
+    <div id="impAligned">
+      <label>Direções
+        <select id="impDirs"></select>
+      </label>
+      <p class="hint">Células lidas da esquerda p/ direita, de cima p/ baixo, na ordem frame&times;direção — <span id="impFramesLbl"></span></p>
+    </div>
+    <div id="impMis" class="radios" hidden>
+      <label class="chk"><input type="radio" name="imode" value="scale" checked> redimensionar para caber (nearest)</label>
+      <label class="chk"><input type="radio" name="imode" value="center"> centralizar (corta o excesso)</label>
+      <label class="chk"><input type="radio" name="imode" value="crop"> alinhar no canto superior esquerdo</label>
+    </div>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button value="ok" class="primary">Importar</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlgSheet">
+  <form method="dialog">
+    <h3>Exportar spritesheet PNG</h3>
+    <div class="sheet-head">
+      <span class="hint">States a incluir (cada state vira uma linha):</span>
+      <button id="btnSheetAll" class="mini">marcar/desmarcar todos</button>
+    </div>
+    <div id="sheetStates" class="sheet-states"></div>
+    <div class="sheet-preview-box">
+      <canvas id="sheetPreview"></canvas>
+    </div>
+    <p id="sheetInfo" class="hint"></p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button value="ok" class="primary">Baixar PNG</button>
+    </menu>
+  </form>
+</dialog>
+
+<div id="ctxMenu" class="ctx" hidden>
+  <button data-act="rename">Renomear <kbd>F2</kbd></button>
+  <button data-act="dup">Duplicar <kbd>Ctrl+C/V</kbd></button>
+  <button data-act="del" class="danger">Excluir <kbd>Del</kbd></button>
+</div>
+
+<dialog id="dlgDups">
+  <form method="dialog">
+    <h3>Duplicatas encontradas</h3>
+    <ul id="dupList" class="dup-list"></ul>
+    <menu>
+      <button value="cancel" class="primary">Fechar</button>
     </menu>
   </form>
 </dialog>
