@@ -1,0 +1,7 @@
+# arquivos gerados pelo editor
+*.dmi.bak
+
+# artefatos de teste
+.test-*
+
+node_modules/
