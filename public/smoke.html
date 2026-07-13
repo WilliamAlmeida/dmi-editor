@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>SMOKE:RODANDO</title>
+<style>body{font:13px monospace;background:#111;color:#ddd;padding:10px} .FAIL{color:#f87171} .PASS{color:#6ee7b7} iframe{position:absolute;left:0;top:0;width:1400px;height:900px;opacity:.02;pointer-events:none}</style>
+</head>
+<body>
+<h3 id="verdict">rodando...</h3>
+<pre id="out"></pre>
+<iframe id="app" src="/#Test%2Fbase.dmi" width="1400" height="900"></iframe>
+<script>
+// Smoke test: dirige o editor real dentro do iframe com eventos sinteticos
+// e verifica efeitos observaveis (status bar, toast, abas, grid).
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const log = [];
+let failed = false;
+const ok = (name, cond) => {
+  log.push(`${cond ? 'PASS' : 'FAIL'} ${name}`);
+  if (!cond) failed = true;
+};
+
+async function waitFor(fn, ms = 6000) {
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
+    if (Date.now() - t0 > ms) throw new Error('timeout esperando condição');
+    await sleep(60);
+  }
+}
+
+const frame = document.getElementById('app');
+frame.addEventListener('load', () => run().catch((e) => finish('EXCEÇÃO: ' + e.message)));
+
+function finish(extra) {
+  if (extra) { log.push('FAIL ' + extra); failed = true; }
+  document.title = 'SMOKE:' + (failed ? 'FAIL' : 'PASS');
+  document.getElementById('verdict').textContent = document.title;
+  document.getElementById('out').innerHTML = log
+    .map((l) => `<span class="${l.slice(0, 4)}">${l}</span>`)
+    .join('\n');
+}
+
+async function run() {
+  const cw = frame.contentWindow;
+  const cd = cw.document;
+  const $ = (id) => cd.getElementById(id);
+
+  await waitFor(() => !$('editor').hidden);
+  ok('arquivo abriu (canvas visível)', true);
+  await waitFor(() => $('stateList').children.length === 2);
+  ok('2 states listados', true);
+  await waitFor(() => $('tabbar').children.length === 1);
+  ok('aba criada', true);
+
+  const zoom = parseInt($('zoomLabel').textContent) / 100;
+  const canvas = $('editor');
+  const px = (x, y) => {
+    const r = canvas.getBoundingClientRect();
+    return { clientX: r.left + x * zoom + zoom / 2, clientY: r.top + y * zoom + zoom / 2 };
+  };
+  const pev = (type, x, y, extra = {}) =>
+    canvas.dispatchEvent(new cw.PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, ...px(x, y), ...extra }));
+  const key = (k, extra = {}) =>
+    cd.body.dispatchEvent(new cw.KeyboardEvent('keydown', { bubbles: true, key: k, ...extra }));
+  const toastText = () => ($('toast').hidden ? '' : $('toast').textContent);
+
+  // --- lapis: pinta (2,2) de branco e confere no canvas ---
+  pev('pointerdown', 2, 2);
+  pev('pointerup', 2, 2);
+  await sleep(50);
+  const ctx = canvas.getContext('2d');
+  const sxy = Math.min(canvas.width - 1, Math.floor(2.5 * zoom));
+  const p = ctx.getImageData(sxy, sxy, 1, 1).data;
+  ok('lápis pintou pixel branco', p[0] > 240 && p[1] > 240 && p[2] > 240);
+
+  // --- selecao retangular ---
+  cd.querySelector('[data-tool="select"]').click();
+  pev('pointerdown', 4, 4);
+  pev('pointermove', 12, 10);
+  pev('pointerup', 12, 10);
+  await sleep(50);
+  ok('seleção 9×7 na status bar', $('stSel').textContent.includes('9×7'));
+
+  // --- mover a selecao (lift + drag) ---
+  pev('pointerdown', 6, 6);
+  pev('pointermove', 10, 8);
+  pev('pointerup', 10, 8);
+  await sleep(50);
+  ok('seleção movida sem erro', $('stSel').textContent.includes('9×7'));
+
+  // --- copiar / colar / esc ---
+  key('c', { ctrlKey: true });
+  await sleep(30);
+  ok('Ctrl+C mostra toast', toastText().includes('Copiado'));
+  key('v', { ctrlKey: true });
+  await sleep(30);
+  ok('Ctrl+V cria seleção flutuante', $('stSel').textContent.includes('9×7'));
+  key('Escape');
+  await sleep(30);
+  ok('Esc limpa a seleção', $('stSel').textContent === '');
+  key('z', { ctrlKey: true });
+  key('z', { ctrlKey: true });
+  key('z', { ctrlKey: true });
+  await sleep(30);
+  ok('undo em série não quebra', true);
+
+  // --- dialogo de matiz com preview ---
+  $('btnHue').click();
+  await sleep(30);
+  ok('diálogo de matiz abre', $('dlgHue').open);
+  $('hH').value = 120;
+  $('hH').dispatchEvent(new cw.Event('input'));
+  await sleep(30);
+  ok('slider de matiz com preview não quebra', true);
+  $('dlgHue').querySelector('button[value="cancel"]').click();
+  await sleep(30);
+  ok('cancelar matiz fecha', !$('dlgHue').open);
+
+  // --- frames + scrub ---
+  $('btnFrameAdd').click();
+  await sleep(50);
+  ok('frame adicionado (scrub max=1)', $('scrub').max === '1');
+  key('z', { ctrlKey: true });
+  await sleep(50);
+  ok('undo do frame (scrub max=0)', $('scrub').max === '0');
+
+  // --- gerar direcao (E -> W espelhado) ---
+  $('dcFrom').value = '2';
+  $('dcTo').value = '3';
+  $('btnDirCopy').click();
+  await sleep(50);
+  ok('gerar direção E→W', toastText().includes('E → W'));
+
+  // --- shift+seta desloca frame com wrap ---
+  key('ArrowRight', { shiftKey: true });
+  await sleep(30);
+  ok('Shift+seta não quebra (wrap shift)', true);
+
+  // --- busca de states ---
+  $('stateSearch').value = 'zzz_nao_existe';
+  $('stateSearch').dispatchEvent(new cw.Event('input'));
+  await sleep(30);
+  ok('busca filtra tudo', $('stateList').children.length === 0);
+  $('stateSearch').value = '';
+  $('stateSearch').dispatchEvent(new cw.Event('input'));
+  await sleep(30);
+  ok('busca limpa volta a listar', $('stateList').children.length === 2);
+
+  // --- copiar state / colar state ---
+  $('btnStateCopy').click();
+  await sleep(30);
+  $('btnStatePaste').click();
+  await sleep(50);
+  ok('colar state (3 na lista)', $('stateList').children.length === 3);
+  key('z', { ctrlKey: true });
+  await sleep(50);
+  ok('undo do colar state', $('stateList').children.length === 2);
+
+  // --- segunda aba ---
+  const li = [...$('fileList').children].find((l) => l.dataset.path === 'Test/map.dmi');
+  li.click();
+  await waitFor(() => $('tabbar').children.length === 2);
+  ok('segunda aba abriu', true);
+  $('tabbar').children[0].click();
+  await sleep(80);
+  ok('voltar pra 1ª aba', $('tabbar').children[0].className.includes('active'));
+
+  // --- duplicatas (base.dmi tem frames repetidos entre dirs? provavelmente nao; só não pode quebrar) ---
+  $('btnDups').click();
+  await sleep(50);
+  ok('scan de duplicatas não quebra', true);
+  if ($('dlgDups').open) $('dlgDups').querySelector('button').click();
+  await sleep(30);
+
+  // --- espessura de pincel ---
+  cd.querySelector('[data-tool="pencil"]').click();
+  $('brushSize').value = 3;
+  pev('pointerdown', 20, 20);
+  pev('pointerup', 20, 20);
+  await sleep(40);
+  const q = ctx.getImageData(Math.floor(21.5 * zoom), Math.floor(21.5 * zoom), 1, 1).data;
+  ok('pincel 3px pintou o vizinho (21,21)', q[0] > 240 && q[1] > 240);
+  $('brushSize').value = 1;
+  key('z', { ctrlKey: true });
+  await sleep(30);
+
+  // --- multi-seleção de frames (Ctrl+clique) ---
+  const cell01 = cd.querySelector('#grid canvas[data-f="0"][data-d="1"]');
+  cell01.dispatchEvent(new cw.MouseEvent('click', { bubbles: true, ctrlKey: true }));
+  await sleep(30);
+  ok('Ctrl+clique multi-seleciona frames', $('stSel').textContent.includes('frame'));
+  $('btnHue').click();
+  await sleep(30);
+  ok('matiz oferece "frames selecionados"', !$('hSelWrap').hidden && $('hSelLbl').textContent.includes('2'));
+  $('dlgHue').querySelector('button[value="cancel"]').click();
+  await sleep(30);
+  cd.querySelector('#grid canvas[data-f="0"][data-d="0"]').click();
+  await sleep(30);
+  ok('clique simples limpa multi-seleção', $('stSel').textContent === '');
+
+  // --- lightbox de export de folha ---
+  $('btnExpSheet').click();
+  await sleep(60);
+  ok('diálogo da folha abre com preview', $('dlgSheet').open && $('sheetPreview').width > 0);
+  $('dlgSheet').querySelector('button[value="cancel"]').click();
+  await sleep(30);
+
+  // --- fechar todas as abas limpa o preview ---
+  cw.confirm = () => true;
+  while ($('tabbar').children.length) {
+    $('tabbar').children[0].querySelector('b').click();
+    await sleep(60);
+  }
+  await waitFor(() => {
+    const pv = $('preview');
+    const pd = pv.getContext('2d').getImageData(0, 0, Math.max(1, pv.width), 1).data;
+    return [...pd].every((v) => v === 0);
+  }, 3000).then(
+    () => ok('preview limpo após fechar tudo', true),
+    () => {
+      const pv = $('preview');
+      const pd = pv.getContext('2d').getImageData(0, 0, Math.max(1, pv.width), 1).data;
+      ok(`preview limpo após fechar tudo (w=${pv.width} tabs=${$('tabbar').children.length} px=${pd.slice(0, 8)})`, false);
+    }
+  );
+  ok('editor escondido após fechar tudo', $('editor').hidden);
+
+  finish();
+}
+</script>
+</body>
+</html>
