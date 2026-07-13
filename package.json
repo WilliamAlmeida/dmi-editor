@@ -1,0 +1,13 @@
+{
+  "name": "dmi-editor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Editor de sprites .dmi (BYOND) local, sem dependências",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

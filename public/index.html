@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>DMI Editor</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23111'/><rect x='2' y='2' width='6' height='6' fill='%236ee7b7'/><rect x='8' y='8' width='6' height='6' fill='%2360a5fa'/></svg>">
+</head>
+<body>
+
+<header>
+  <div class="brand">DMI<b>Editor</b></div>
+  <div id="fileTitle" class="file-title">nenhum arquivo aberto</div>
+  <div class="spacer"></div>
+  <button id="btnUndo" class="icon" title="Desfazer (Ctrl+Z)">&#8630;</button>
+  <button id="btnRedo" class="icon" title="Refazer (Ctrl+Y)">&#8631;</button>
+  <div class="sep"></div>
+  <button id="btnZoomOut" class="icon" title="Zoom -">&minus;</button>
+  <span id="zoomLabel" class="zoom-label">100%</span>
+  <button id="btnZoomIn" class="icon" title="Zoom +">+</button>
+  <div class="sep"></div>
+  <button id="btnNew">Novo</button>
+  <button id="btnSaveAs">Salvar como</button>
+  <button id="btnSave" class="primary" title="Ctrl+S">Salvar</button>
+</header>
+
+<aside id="left">
+  <section class="panel files">
+    <h2>Arquivos</h2>
+    <div id="crumbs" class="crumbs"></div>
+    <ul id="fileList" class="list"></ul>
+  </section>
+
+  <section class="panel states">
+    <h2>
+      Icon states
+      <span class="head-btns">
+        <button id="btnStateAdd" class="icon" title="Novo state">+</button>
+        <button id="btnStateDup" class="icon" title="Duplicar state">&#10697;</button>
+        <button id="btnStateUp" class="icon" title="Mover para cima">&#9650;</button>
+        <button id="btnStateDown" class="icon" title="Mover para baixo">&#9660;</button>
+        <button id="btnStateDel" class="icon danger" title="Excluir state">&times;</button>
+      </span>
+    </h2>
+    <ul id="stateList" class="list states-list"></ul>
+  </section>
+</aside>
+
+<main id="stage">
+  <div id="toolbar">
+    <button class="tool" data-tool="pencil" title="Lápis (B)">&#9998;</button>
+    <button class="tool" data-tool="eraser" title="Borracha (E)">&#9003;</button>
+    <button class="tool" data-tool="fill" title="Balde (G)">&#9634;</button>
+    <button class="tool" data-tool="picker" title="Conta-gotas (I)">&#9679;</button>
+    <button class="tool" data-tool="line" title="Linha (L)">&#9585;</button>
+    <button class="tool" data-tool="rect" title="Retângulo (R)">&#9744;</button>
+    <div class="sep"></div>
+    <label class="chk"><input type="checkbox" id="fillShape"> preencher</label>
+    <div class="sep"></div>
+    <button id="btnFlipH" title="Espelhar horizontal">&#8646;</button>
+    <button id="btnFlipV" title="Espelhar vertical">&#8645;</button>
+    <button id="btnClear" title="Limpar frame (Del)">Limpar</button>
+    <button id="btnCopy" title="Copiar frame (Ctrl+C)">Copiar</button>
+    <button id="btnPaste" title="Colar frame (Ctrl+V)">Colar</button>
+    <div class="sep"></div>
+    <label class="chk"><input type="checkbox" id="showGrid" checked> grade</label>
+  </div>
+
+  <div id="canvasWrap">
+    <div id="empty" class="empty">
+      <p>Abra um <b>.dmi</b> na lista à esquerda<br>ou crie um <b>Novo</b>.</p>
+    </div>
+    <canvas id="editor" hidden></canvas>
+  </div>
+
+  <div id="colorbar">
+    <input type="color" id="colorPick" value="#ffffff" title="Cor">
+    <label class="alpha">alfa
+      <input type="range" id="alphaRange" min="0" max="255" value="255">
+      <span id="alphaVal">255</span>
+    </label>
+    <div id="palette" class="palette"></div>
+  </div>
+</main>
+
+<aside id="right">
+  <section class="panel">
+    <h2>Preview <button id="btnPlay" class="icon" title="Play/Pause">&#9654;</button></h2>
+    <div class="preview-box">
+      <canvas id="preview" width="32" height="32"></canvas>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Propriedades do state</h2>
+    <div class="props">
+      <label>Nome <input type="text" id="pName" placeholder="(sem nome)"></label>
+      <label>Dirs
+        <select id="pDirs">
+          <option value="1">1</option>
+          <option value="4">4</option>
+          <option value="8">8</option>
+        </select>
+      </label>
+      <label>Frames <input type="number" id="pFrames" min="1" max="512"></label>
+      <label>Delay <input type="number" id="pDelay" min="0" step="0.5" title="Do frame selecionado (1 = 0,1s)"></label>
+      <label>Loop <input type="number" id="pLoop" min="0" title="0 = infinito"></label>
+      <label class="chk"><input type="checkbox" id="pRewind"> rewind</label>
+      <label class="chk"><input type="checkbox" id="pMovement"> movement</label>
+    </div>
+  </section>
+
+  <section class="panel grow">
+    <h2>
+      Frames &times; Direções
+      <span class="head-btns">
+        <button id="btnFrameAdd" class="icon" title="Adicionar frame">+</button>
+        <button id="btnFrameDup" class="icon" title="Duplicar frame">&#10697;</button>
+        <button id="btnFrameDel" class="icon danger" title="Remover frame">&times;</button>
+      </span>
+    </h2>
+    <div id="grid" class="frame-grid"></div>
+  </section>
+</aside>
+
+<footer id="status">
+  <span id="stPath">—</span>
+  <span class="spacer"></span>
+  <span id="stPixel"></span>
+  <span id="stSize"></span>
+</footer>
+
+<dialog id="dlgNew">
+  <form method="dialog">
+    <h3>Novo arquivo DMI</h3>
+    <label>Nome <input type="text" id="nName" value="novo" required></label>
+    <label>Largura <input type="number" id="nW" value="32" min="1" max="512" required></label>
+    <label>Altura <input type="number" id="nH" value="32" min="1" max="512" required></label>
+    <p class="hint">Será criado na pasta atual dos Arquivos.</p>
+    <menu>
+      <button value="cancel">Cancelar</button>
+      <button value="ok" class="primary">Criar</button>
+    </menu>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
